@@ -631,7 +631,7 @@ function restDone(t){
   toast(`Rest's over: ${t.name}`, 'ok');
   if(document.hidden && 'Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker){
     navigator.serviceWorker.ready
-      .then(reg => reg.showNotification('Rest complete', {body:`${t.name}: back to it`, icon:'icon-192.png', tag:'rest'}))
+      .then(reg => reg.showNotification('Rest complete', {body:`${t.name}: back to it`, icon:'logo-192.png', tag:'rest'}))
       .catch(() => {});
   }
 }

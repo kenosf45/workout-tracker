@@ -1,6 +1,6 @@
 // Bump this name on every release so phones pick up the new files.
-const CACHE_NAME = 'workout-tracker-v4';
-const ASSETS = ['./', './index.html', './app.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'workout-tracker-v5';
+const ASSETS = ['./', './index.html', './app.css', './app.js', './manifest.json', './logo-32.png', './logo-180.png', './logo-192.png', './logo-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -46,8 +46,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title || "Rest's over", {
       body: data.body || 'Time for your next set.',
-      icon: 'icon-192.png',
-      badge: 'icon-192.png',
+      icon: 'logo-192.png',
+      badge: 'logo-192.png',
       tag: data.tag || 'rest',
       renotify: true,
     })
