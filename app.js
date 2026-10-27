@@ -11,6 +11,11 @@ const UNIT = 'lb';
 const BACKFILL_CODE_HASH = '2d57614242936ea197f8d41de38d10f93e4165bfe265f61f4b785e6cc4b078f8';
 const BACKFILL_MONTHS = 2;
 const MAX_VIDEO_MB = 300;
+// Push server that sends the "rest's over" alert while the app is closed (source: APPS/workout-push).
+const PUSH_URL = 'https://workout-push.marcomorocho11.workers.dev';
+const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
+// Per-phone keys that never go into a backup file.
+const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push'];
 
 const icon = (d, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -565,7 +570,9 @@ let restTick = null;
 const getTimer = () => loadJSON('wt_timer', null);
 
 function startRest(seconds, name){
-  saveJSON('wt_timer', {endsAt:Date.now() + seconds * 1000, total:seconds, name});
+  const t = {endsAt:Date.now() + seconds * 1000, total:seconds, name, pushed:!!getPushSub()};
+  saveJSON('wt_timer', t);
+  if(t.pushed) schedulePush(t);
   runTimer();
 }
 function runTimer(){
@@ -580,6 +587,12 @@ function paintTimer(){
   const t = getTimer();
   if(!t){ stopTimer(); return; }
   const left = Math.ceil((t.endsAt - Date.now()) / 1000);
+  // Watching the timer run out in the app: the beep covers it, so call off the lock-screen alert.
+  if(left <= 2 && t.pushed && !document.hidden){
+    t.pushed = false;
+    saveJSON('wt_timer', t);
+    cancelPush();
+  }
   if(left <= 0){ stopTimer(); restDone(t); return; }
   $('rest-time').textContent = fmtClock(left);
   $('rest-name').textContent = t.name;
@@ -596,10 +609,15 @@ function addRest(sec){
   if(!t) return;
   t.endsAt += sec * 1000;
   t.total += sec;
+  if(getPushSub()){ t.pushed = true; schedulePush(t); }
   saveJSON('wt_timer', t);
   paintTimer();
 }
-function skipRest(){ stopTimer(); }
+function skipRest(){
+  const t = getTimer();
+  if(t && t.pushed) cancelPush();
+  stopTimer();
+}
 function resumeTimer(){
   const t = getTimer();
   if(!t) return;
@@ -616,6 +634,93 @@ function restDone(t){
       .then(reg => reg.showNotification('Rest complete', {body:`${t.name}: back to it`, icon:'icon-192.png', tag:'rest'}))
       .catch(() => {});
   }
+}
+
+/* ================= Rest alerts (push) =================
+   The app sends the rest end time to the push server, which sends a notification
+   at that moment even if the app is closed or the phone is locked. */
+const getPushSub = () => loadJSON('wt_push', null);
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function deviceId(){
+  let id = localStorage.getItem('wt_device');
+  if(!id){
+    id = crypto.randomUUID ? crypto.randomUUID() : newId('dev').replace(/_/g, '-');
+    localStorage.setItem('wt_device', id);
+  }
+  return id;
+}
+function pushSupport(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'unsupported';
+  return Notification.permission === 'denied' ? 'denied' : 'ok';
+}
+function pushRequest(path, extra = {}){
+  const subscription = getPushSub();
+  if(!subscription) return Promise.resolve(null);
+  // text/plain keeps this a "simple" request, so there's no extra CORS round trip.
+  return fetch(PUSH_URL + path, {
+    method:'POST', keepalive:true, headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({device:deviceId(), subscription, ...extra}),
+  }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+}
+const schedulePush = (t) => pushRequest('/schedule', {endsAt:t.endsAt, title:'Rest\'s over', body:`${t.name}: time for your next set`});
+const cancelPush = () => pushRequest('/cancel');
+
+function vapidKeyBytes(){
+  const s = atob(VAPID_PUBLIC_KEY.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+
+function onPushToggle(el){ if(el.checked) enablePush(); else disablePush(); }
+
+async function enablePush(){
+  if(pushSupport() === 'unsupported'){
+    toast(isIOS && !isStandalone() ? 'Add the app to your Home Screen first, then open it from there' : 'This browser can\'t send rest alerts', 'error');
+    renderSettings();
+    return;
+  }
+  // Must be the first thing that waits: iPhone only shows the prompt straight after a tap.
+  const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+  if(permission !== 'granted'){
+    toast('Notifications weren\'t allowed', 'error');
+    renderSettings();
+    return;
+  }
+  try{
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription() ||
+      await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:vapidKeyBytes()});
+    saveJSON('wt_push', sub.toJSON());
+    const ok = await pushRequest('/schedule', {endsAt:Date.now() + 4000, title:'Rest alerts are on',
+      body:'You\'ll get one of these when rest is over, even with your phone locked.'});
+    toast(ok ? 'Rest alerts are on' : 'Alerts are on, but the server didn\'t answer. Check your connection.', ok ? 'ok' : 'error');
+  }catch(e){
+    localStorage.removeItem('wt_push');
+    toast('Couldn\'t turn on rest alerts. Try again.', 'error');
+  }
+  renderSettings();
+}
+
+async function disablePush(){
+  await cancelPush();
+  try{
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if(sub) await sub.unsubscribe();
+  }catch(e){}
+  localStorage.removeItem('wt_push');
+  toast('Rest alerts are off');
+  renderSettings();
+}
+
+// If notifications were switched off in the phone's settings, or the push address changed, catch up.
+async function syncPush(){
+  if(!getPushSub() || pushSupport() === 'unsupported') return;
+  try{
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if(sub && Notification.permission === 'granted') saveJSON('wt_push', sub.toJSON());
+    else localStorage.removeItem('wt_push');
+  }catch(e){}
 }
 
 // iPhone only lets a page make sound after a tap, so the audio is unlocked on each set tick.
@@ -962,6 +1067,18 @@ function drawChart(box, points, unit){
 function goSettings(){ showScreen('settings'); renderSettings(); }
 
 function renderSettings(){
+  const support = pushSupport();
+  const pushOn = !!getPushSub() && support === 'ok' && Notification.permission === 'granted';
+  $('push-toggle').checked = pushOn;
+  $('push-toggle').disabled = support !== 'ok';
+  $('push-row').classList.toggle('is-used', support !== 'ok');
+  $('push-sub').textContent =
+    pushOn ? 'On. Works even with your phone locked' :
+    support === 'denied' ? 'Blocked. Allow notifications for Workouts in your phone\'s Settings' :
+    support === 'unsupported' && isIOS && !isStandalone() ? 'Add this app to your Home Screen first (Share, then Add to Home Screen), then open it from there' :
+    support === 'unsupported' ? 'Not available in this browser' :
+    'Get an alert when rest is over, even with your phone locked';
+
   const s = getSettings();
   const row = $('bf-row');
   if(s.backfillUsedAt){
@@ -1272,7 +1389,7 @@ async function buildBackup(includeVideos){
   const data = {};
   for(let i = 0; i < localStorage.length; i++){
     const k = localStorage.key(i);
-    if(k && k.startsWith('wt_') && k !== 'wt_timer') data[k] = localStorage.getItem(k);
+    if(k && k.startsWith('wt_') && !DEVICE_KEYS.includes(k)) data[k] = localStorage.getItem(k);
   }
   const videos = [], parts = [];
   let offset = 0;
@@ -1358,8 +1475,8 @@ async function importBackup(file){
     toast('Restoring…');
     const keepVideos = !header.videos.length;
     const currentVideos = localStorage.getItem('wt_videos');
-    Object.keys(localStorage).filter(k => k.startsWith('wt_')).forEach(k => localStorage.removeItem(k));
-    Object.entries(header.data).forEach(([k, v]) => { if(k.startsWith('wt_')) localStorage.setItem(k, v); });
+    Object.keys(localStorage).filter(k => k.startsWith('wt_') && !DEVICE_KEYS.includes(k)).forEach(k => localStorage.removeItem(k));
+    Object.entries(header.data).forEach(([k, v]) => { if(k.startsWith('wt_') && !DEVICE_KEYS.includes(k)) localStorage.setItem(k, v); });
     if(keepVideos){
       // A backup without videos leaves the videos already on this phone alone.
       if(currentVideos) localStorage.setItem('wt_videos', currentVideos); else localStorage.removeItem('wt_videos');
@@ -1483,7 +1600,7 @@ function init(){
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if(hadController && !reloading){ reloading = true; location.reload(); }
     });
-    window.addEventListener('load', () => navigator.serviceWorker.register('service-worker.js').catch(() => {}));
+    window.addEventListener('load', () => navigator.serviceWorker.register('service-worker.js').then(syncPush).catch(() => {}));
   }
 }
 

@@ -1,5 +1,5 @@
 // Bump this name on every release so phones pick up the new files.
-const CACHE_NAME = 'workout-tracker-v3';
+const CACHE_NAME = 'workout-tracker-v4';
 const ASSETS = ['./', './index.html', './app.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -35,6 +35,32 @@ self.addEventListener('fetch', (event) => {
         return cached;
       }
       return network;
+    })
+  );
+});
+
+// Rest alert from the push server. iPhone requires every push to show a notification.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) {}
+  event.waitUntil(
+    self.registration.showNotification(data.title || "Rest's over", {
+      body: data.body || 'Time for your next set.',
+      icon: 'icon-192.png',
+      badge: 'icon-192.png',
+      tag: data.tag || 'rest',
+      renotify: true,
+    })
+  );
+});
+
+// Tapping the alert brings the app back up.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) if ('focus' in c) return c.focus();
+      return self.clients.openWindow('./');
     })
   );
 });

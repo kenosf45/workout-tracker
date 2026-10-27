@@ -193,6 +193,21 @@
       <h1 class="large-title">Settings</h1>
     </header>
 
+    <p class="section-label">Rest alerts</p>
+    <div class="list-card">
+      <label class="list-row" id="push-row">
+        <span class="list-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg></span>
+        <span class="list-text">
+          <span class="list-title">Alert when rest is over</span>
+          <span class="list-sub" id="push-sub"></span>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="push-toggle" onchange="onPushToggle(this)">
+          <span class="track"></span>
+        </span>
+      </label>
+    </div>
+
     <p class="section-label">Past workouts</p>
     <div class="list-card">
       <button class="list-row" id="bf-row" onclick="openBackfill()">
