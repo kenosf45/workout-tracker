@@ -92,6 +92,17 @@
       </div>
       <div class="step-row">
         <span class="step-text">
+          <span class="step-label">Weight (lb)</span>
+          <span class="step-hint">Optional. Fills in every set</span>
+        </span>
+        <div class="stepper">
+          <button onclick="step('edit-weight',-1)" aria-label="Less weight"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+          <input id="edit-weight" inputmode="decimal" placeholder="0" data-min="0" data-max="2000" data-step="5" data-decimal="1" aria-label="Weight in pounds">
+          <button onclick="step('edit-weight',1)" aria-label="More weight"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></button>
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-text">
           <span class="step-label">Hold time (sec)</span>
           <span class="step-hint">For planks and holds. 0 = off</span>
         </span>

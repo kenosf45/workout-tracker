@@ -278,12 +278,12 @@ function buildDayLog(dayName, key){
   template.forEach(t => {
     const e = byId.get(t.id);
     if(e){
-      Object.assign(e, {name:t.name, reps:t.reps, time:t.time, restSeconds:t.restSeconds || 0});
+      Object.assign(e, {name:t.name, reps:t.reps, weight:t.weight || 0, time:t.time, restSeconds:t.restSeconds || 0});
       fitEntries(e, t.sets);
       byId.delete(t.id);
       out.push(e);
     } else {
-      out.push({id:t.id, name:t.name, sets:t.sets, reps:t.reps, time:t.time, restSeconds:t.restSeconds || 0,
+      out.push({id:t.id, name:t.name, sets:t.sets, reps:t.reps, weight:t.weight || 0, time:t.time, restSeconds:t.restSeconds || 0,
                 entries:Array.from({length:t.sets}, blankEntry)});
     }
   });
@@ -353,18 +353,21 @@ function fmtSet(e, timed, fallbackReps){
   return '✓';
 }
 
-// Grey hint shown in an empty box, and used when a set is ticked without typing.
+// Grey hint shown in an empty box, and used when a set is ticked without typing:
+// the set above it first, then the exercise's planned weight and reps, then last time's numbers.
 function suggestion(ex, i){
-  const p = cur.prev[normName(ex.name)];
-  const pe = p && p.entries[i] && p.entries[i].done ? p.entries[i] : null;
-  let w = pe && num(pe.w) > 0 ? fmtNum(num(pe.w)) : '';
-  let r = pe && num(pe.r) > 0 ? fmtNum(num(pe.r)) : '';
+  let w = '', r = '';
   for(let j = i - 1; j >= 0 && (!w || !r); j--){
     const e = ex.entries[j];
     if(!w && num(e.w) > 0) w = fmtNum(num(e.w));
     if(!r && num(e.r) > 0) r = fmtNum(num(e.r));
   }
+  if(!w && num(ex.weight) > 0) w = fmtNum(num(ex.weight));
   if(!r){ const target = ex.time > 0 ? ex.time : ex.reps; if(target > 0) r = String(target); }
+  const p = cur.prev[normName(ex.name)];
+  const pe = p && p.entries[i] && p.entries[i].done ? p.entries[i] : null;
+  if(!w && pe && num(pe.w) > 0) w = fmtNum(num(pe.w));
+  if(!r && pe && num(pe.r) > 0) r = fmtNum(num(pe.r));
   return {w, r};
 }
 
@@ -376,6 +379,7 @@ function buildCard(ex){
   const vids = videosFor(ex.name).length;
   const inPlan = cur.planIds.has(ex.id);
   const meta = [`${ex.sets} × ${timed ? ex.time + 's' : (ex.reps || 0) + ' reps'}`];
+  if(num(ex.weight) > 0) meta.push(`${fmtNum(num(ex.weight))} ${UNIT}`);
   if(ex.restSeconds > 0) meta.push(`${fmtRest(ex.restSeconds)} rest`);
   if(!inPlan) meta.push('removed from plan');
 
@@ -454,6 +458,7 @@ function fillEditForm(t){
   $('edit-name').classList.remove('shake');
   $('edit-sets').value = t.sets;
   $('edit-reps').value = t.reps || 0;
+  $('edit-weight').value = num(t.weight) > 0 ? fmtNum(num(t.weight)) : '';
   $('edit-time').value = t.time || 0;
   $('edit-rest').value = t.restSeconds || 0;
   $('edit-eyebrow').textContent = DAYS[cur.idx];
@@ -465,7 +470,7 @@ function fillEditForm(t){
 
 function openAddExercise(){
   editing = {id:null, isNew:true, originalName:''};
-  fillEditForm({name:'', sets:3, reps:10, time:0, restSeconds:60});
+  fillEditForm({name:'', sets:3, reps:10, weight:0, time:0, restSeconds:60});
   $('edit-title').textContent = 'New exercise';
   $('edit-delete').hidden = true;
   showScreen('edit');
@@ -495,13 +500,13 @@ function closeEdit(){
 function step(id, dir){
   const el = $(id);
   const min = +el.dataset.min, max = +el.dataset.max, s = +el.dataset.step;
-  let v = (parseInt(el.value, 10) || 0) + dir * s;
-  if(s > 1) v = Math.round(v / s) * s;
-  el.value = Math.min(max, Math.max(min, v));
+  let v = (parseFloat(el.value) || 0) + dir * s;
+  if(s > 1 && !el.dataset.decimal) v = Math.round(v / s) * s; // weights like 17.5 keep their half
+  el.value = fmtNum(Math.min(max, Math.max(min, v)));
 }
 function readStep(id){
   const el = $(id);
-  const v = parseInt(el.value, 10);
+  const v = el.dataset.decimal ? Math.round(parseFloat(el.value) * 10) / 10 : parseInt(el.value, 10);
   return Math.min(+el.dataset.max, Math.max(+el.dataset.min, isFinite(v) ? v : +el.dataset.min));
 }
 
@@ -518,7 +523,8 @@ function submitExercise(){
     toast('Give the exercise a name first', 'error');
     return;
   }
-  const t = {name, sets:readStep('edit-sets'), reps:readStep('edit-reps'), time:readStep('edit-time'), restSeconds:readStep('edit-rest')};
+  const t = {name, sets:readStep('edit-sets'), reps:readStep('edit-reps'), weight:readStep('edit-weight'),
+             time:readStep('edit-time'), restSeconds:readStep('edit-rest')};
   const plan = getPlan();
   const dayName = DAYS[cur.idx];
   plan[dayName] = plan[dayName] || [];
@@ -1437,7 +1443,15 @@ function init(){
     if(clean !== t.value) t.value = clean;
     const ex = findEx(t.dataset.ex);
     if(!ex) return;
-    ex.entries[+t.dataset.i][t.dataset.f] = clean;
+    const i = +t.dataset.i, f = t.dataset.f;
+    ex.entries[i][f] = clean;
+    // Typing in a set copies the number down to every later set that isn't ticked yet.
+    for(let j = i + 1; j < ex.entries.length; j++){
+      if(ex.entries[j].done) continue;
+      ex.entries[j][f] = clean;
+      const box = list.querySelector(`.set-in[data-ex="${ex.id}"][data-i="${j}"][data-f="${f}"]`);
+      if(box) box.value = clean;
+    }
     saveDay();
   });
   list.addEventListener('keydown', e => {
