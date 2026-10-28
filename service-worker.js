@@ -1,5 +1,5 @@
 // Bump this name on every release so phones pick up the new files.
-const CACHE_NAME = 'workout-tracker-v5';
+const CACHE_NAME = 'workout-tracker-v6';
 const ASSETS = ['./', './index.html', './app.css', './app.js', './manifest.json', './logo-32.png', './logo-180.png', './logo-192.png', './logo-512.png'];
 
 self.addEventListener('install', (event) => {

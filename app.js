@@ -15,7 +15,7 @@ const MAX_VIDEO_MB = 300;
 const PUSH_URL = 'https://workout-push.marcomorocho11.workers.dev';
 const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
 // Per-phone keys that never go into a backup file.
-const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push'];
+const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push', 'wt_lastping'];
 
 const icon = (d, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -667,6 +667,18 @@ function pushRequest(path, extra = {}){
 const schedulePush = (t) => pushRequest('/schedule', {endsAt:t.endsAt, title:'Rest\'s over', body:`${t.name}: time for your next set`});
 const cancelPush = () => pushRequest('/cancel');
 
+// Anonymous daily check-in so the owner can see how many phones use the app.
+// Sends only the random phone id and whether rest alerts are on; at most once a day.
+function checkIn(force = false){
+  const today = dateKey(today0());
+  if(!force && localStorage.getItem('wt_lastping') === today) return;
+  if(/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return; // previews don't count
+  fetch(PUSH_URL + '/ping', {
+    method:'POST', keepalive:true, headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({device:deviceId(), alerts:!!getPushSub()}),
+  }).then(r => { if(r.ok) localStorage.setItem('wt_lastping', today); }).catch(() => {});
+}
+
 function vapidKeyBytes(){
   const s = atob(VAPID_PUBLIC_KEY.replace(/-/g, '+').replace(/_/g, '/'));
   return Uint8Array.from(s, c => c.charCodeAt(0));
@@ -695,6 +707,7 @@ async function enablePush(){
     const ok = await pushRequest('/schedule', {endsAt:Date.now() + 4000, title:'Rest alerts are on',
       body:'You\'ll get one of these when rest is over, even with your phone locked.'});
     toast(ok ? 'Rest alerts are on' : 'Alerts are on, but the server didn\'t answer. Check your connection.', ok ? 'ok' : 'error');
+    checkIn(true);
   }catch(e){
     localStorage.removeItem('wt_push');
     toast('Couldn\'t turn on rest alerts. Try again.', 'error');
@@ -709,6 +722,7 @@ async function disablePush(){
     if(sub) await sub.unsubscribe();
   }catch(e){}
   localStorage.removeItem('wt_push');
+  checkIn(true);
   toast('Rest alerts are off');
   renderSettings();
 }
@@ -1585,6 +1599,7 @@ function init(){
   document.addEventListener('visibilitychange', () => {
     if(document.hidden) return;
     resumeTimer();
+    checkIn();
     if(currentScreen === 'week') renderWeek();
   });
   window.addEventListener('resize', debounce(() => { if(currentScreen === 'progress-detail') renderProgressDetail(); }, 150));
@@ -1592,6 +1607,7 @@ function init(){
 
   goWeek();
   resumeTimer();
+  checkIn();
 
   if('serviceWorker' in navigator){
     const hadController = !!navigator.serviceWorker.controller;
