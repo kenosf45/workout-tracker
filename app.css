@@ -389,6 +389,36 @@ button.cal-cell:active{transform:scale(.9);}
 .session-date{font-size:14px; font-weight:600;}
 .session .chips{margin-top:6px;}
 
+/* ---------- Leaderboard ---------- */
+.join-card{background:var(--ink); color:#fff; border-radius:var(--radius); padding:18px; margin-bottom:16px;}
+.join-title{margin:0; font-size:18px; font-weight:700;}
+.join-text{margin:4px 0 14px; font-size:14px; color:rgba(255,255,255,.75);}
+.join-card .btn{background:#fff; color:var(--ink); min-height:46px;}
+.lb-row{
+  display:flex; align-items:center; gap:12px; margin-bottom:8px; padding:12px 14px 12px 10px;
+  border-radius:var(--radius-sm); background:var(--card);
+}
+.lb-row.is-me{background:#fff; box-shadow:inset 0 0 0 2px var(--accent);}
+.lb-rank{width:32px; flex-shrink:0; text-align:center; font-size:15px; font-weight:700; color:var(--ink-2); font-variant-numeric:tabular-nums;}
+.lb-medal{font-size:26px; line-height:1;}
+.lb-av{
+  width:38px; height:38px; flex-shrink:0; border-radius:50%; display:grid; place-items:center;
+  background:#fff; box-shadow:inset 0 0 0 1px var(--line); font-size:13px; font-weight:700; color:var(--ink-2);
+}
+.lb-row.is-me .lb-av{background:var(--accent-soft); color:var(--accent); box-shadow:none;}
+.lb-text{flex:1; min-width:0; display:flex; flex-direction:column; gap:1px;}
+.lb-name{display:flex; align-items:center; gap:6px; min-width:0; font-size:16px; font-weight:600;}
+.lb-name-text{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.lb-sub{font-size:13px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.lb-val{flex-shrink:0; display:flex; flex-direction:column; align-items:flex-end;}
+.lb-num{font-size:20px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums;}
+.lb-unit{font-size:11px; font-weight:600; color:var(--ink-3);}
+.lb-up{color:var(--done);}
+.lb-down{color:var(--missed);}
+.lb-gap{margin:14px 0 0; text-align:center; font-size:14px; font-weight:600; color:var(--ink-2);}
+.lb-gap:empty{display:none;}
+.lb-note{margin:18px 8px 0; text-align:center; font-size:13px; color:var(--ink-3);}
+
 /* ---------- Settings ---------- */
 .list-card{background:var(--card); border-radius:var(--radius-sm); overflow:hidden;}
 .list-row{

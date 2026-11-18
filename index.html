@@ -188,6 +188,23 @@
     <div id="pd-sessions"></div>
   </section>
 
+  <!-- Leaderboard -->
+  <section class="screen" id="screen-leaders">
+    <header class="page-head">
+      <p class="eyebrow" id="lb-about"></p>
+      <h1 class="large-title">Leaderboard</h1>
+    </header>
+    <div class="join-card" id="lb-join" hidden>
+      <p class="join-title">Join the leaderboard</p>
+      <p class="join-text">Pick a nickname. Others only see it and your totals, never your workouts.</p>
+      <button class="btn" onclick="joinLeaderboard()">Join with a nickname</button>
+    </div>
+    <div class="seg" id="lb-seg"></div>
+    <div id="lb-list"></div>
+    <p class="lb-gap" id="lb-gap"></p>
+    <p class="lb-note">Improvement compares each person's best lifts this week with their own last 4 weeks.</p>
+  </section>
+
   <!-- Settings -->
   <section class="screen" id="screen-settings">
     <header class="page-head">
@@ -207,6 +224,29 @@
           <span class="track"></span>
         </span>
       </label>
+    </div>
+
+    <p class="section-label">Leaderboard</p>
+    <div class="list-card">
+      <label class="list-row">
+        <span class="list-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/></svg></span>
+        <span class="list-text">
+          <span class="list-title">Show me on the leaderboard</span>
+          <span class="list-sub" id="lb-sub"></span>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="lb-toggle" onchange="onLbToggle(this)">
+          <span class="track"></span>
+        </span>
+      </label>
+      <button class="list-row" id="lb-name-row" onclick="editNickname()" hidden>
+        <span class="list-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></span>
+        <span class="list-text">
+          <span class="list-title">Nickname</span>
+          <span class="list-sub" id="lb-name"></span>
+        </span>
+        <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
+      </button>
     </div>
 
     <p class="section-label">Past workouts</p>
@@ -261,7 +301,7 @@
       </div>
     </div>
 
-    <p class="foot-note">Your workouts are saved on this phone. The app counts anonymous daily opens, with no names or workout data.<br>Workout Tracker 2.1</p>
+    <p class="foot-note">Your workouts are saved on this phone. The app counts anonymous daily opens, with no names or workout data.<br>Workout Tracker 2.2</p>
   </section>
 
   <!-- Backfill (code-locked, one time) -->
@@ -308,6 +348,10 @@
     <button class="tab" data-tab="progress" onclick="goProgress()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5L19.5 8"/><path d="M15 8h4.5v4.5"/></svg>
       <span>Progress</span>
+    </button>
+    <button class="tab" data-tab="leaders" onclick="goLeaders()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/></svg>
+      <span>Leaders</span>
     </button>
     <button class="tab" data-tab="settings" onclick="goSettings()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg>

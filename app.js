@@ -11,11 +11,13 @@ const UNIT = 'lb';
 const BACKFILL_CODE_HASH = '2d57614242936ea197f8d41de38d10f93e4165bfe265f61f4b785e6cc4b078f8';
 const BACKFILL_MONTHS = 2;
 const MAX_VIDEO_MB = 300;
-// Push server that sends the "rest's over" alert while the app is closed (source: APPS/workout-push).
-const PUSH_URL = 'https://workout-push.marcomorocho11.workers.dev';
+// Server for rest alerts, usage counts and the leaderboard (source: APPS/workout-push).
+// Previews talk to a local copy (`wrangler dev`) so testing never touches the real board.
+const IS_PREVIEW = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+const PUSH_URL = IS_PREVIEW ? 'http://127.0.0.1:8787' : 'https://workout-push.marcomorocho11.workers.dev';
 const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
 // Per-phone keys that never go into a backup file.
-const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push', 'wt_lastping'];
+const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push', 'wt_lastping', 'wt_lb', 'wt_lbsent'];
 
 const icon = (d, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -33,6 +35,7 @@ const ICON = {
   flame: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6 2.3c.4 2.9-.7 4.6-2.1 6.2C9 10.1 7.5 11.7 7.5 14.6A4.5 4.5 0 0 0 12 19.2a4.6 4.6 0 0 0 4.6-4.6c0-1.6-.6-2.8-1.3-3.7-.2 1.3-.9 2.1-1.8 2.4.6-2.9-.1-6.6-.9-11z"/></svg>',
   lock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
   calCheck: icon('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
+  trophy: icon('<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/>'),
   chart: icon('<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5L19.5 8"/>'),
 };
 const STATUS_ICON = {
@@ -185,7 +188,7 @@ function workoutStats(){
 /* ================= Screens & dock ================= */
 const SCREENS = {
   week:{tab:'week'}, history:{tab:'history'}, progress:{tab:'progress'},
-  'progress-detail':{tab:'progress'}, settings:{tab:'settings'},
+  'progress-detail':{tab:'progress'}, leaders:{tab:'leaders'}, settings:{tab:'settings'},
   day:{action:true}, edit:{action:true}, backfill:{action:true},
 };
 let currentScreen = 'week';
@@ -270,8 +273,12 @@ function goDay(i){
   const d = weekDates()[i];
   Object.assign(cur, {idx:i, date:d, key:dateKey(d)});
   showScreen('day');
-  setDockButton('Done', goWeek);
+  setDockButton('Done', finishDay);
   renderDay();
+}
+function finishDay(){
+  syncLeaderboard();
+  goWeek();
 }
 
 // Today's log, merged with the current weekly plan.
@@ -498,7 +505,7 @@ function openEditExercise(exId){
 function closeEdit(){
   revokeEditUrls();
   showScreen('day');
-  setDockButton('Done', goWeek);
+  setDockButton('Done', finishDay);
   renderDay();
 }
 
@@ -672,7 +679,7 @@ const cancelPush = () => pushRequest('/cancel');
 function checkIn(force = false){
   const today = dateKey(today0());
   if(!force && localStorage.getItem('wt_lastping') === today) return;
-  if(/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return; // previews don't count
+  if(IS_PREVIEW) return; // previews don't count
   fetch(PUSH_URL + '/ping', {
     method:'POST', keepalive:true, headers:{'Content-Type':'text/plain'},
     body:JSON.stringify({device:deviceId(), alerts:!!getPushSub()}),
@@ -1077,6 +1084,221 @@ function drawChart(box, points, unit){
   svgEl.addEventListener('pointerleave', e => { if(e.pointerType === 'mouse') hide(); });
 }
 
+/* ================= Leaderboard =================
+   Opt-in. The phone works out its own totals and sends only a nickname plus those numbers. */
+const getLb = () => loadJSON('wt_lb', null); // {name, on, pendingLeave?}
+const lbOn = () => { const lb = getLb(); return !!(lb && lb.on); };
+let lbTab = 'streak', lbData = null, lbState = 'idle';
+
+function lbRequest(path, extra = {}){
+  return fetch(PUSH_URL + path, {
+    method:'POST', keepalive:true, headers:{'Content-Type':'text/plain'},
+    body:JSON.stringify({device:deviceId(), ...extra}),
+  }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+}
+
+// Streak: weeks in a row with a workout. Lifted: weight × reps this week (Mon–Sun).
+// Improvement: for each exercise done in the last 7 days and in the 4 weeks before, this week's
+// best (estimated one-rep max, or most reps / longest hold without weight) vs. their usual weekly best.
+function leaderboardStats(){
+  const t = today0();
+  const week = dateKey(startOfWeek(t));
+  let lifted = 0, sets = 0;
+  const best = {};
+  allLogs().forEach(({date, log}) => {
+    if(log.isRest) return;
+    const daysAgo = Math.round((t - parseKey(date)) / 864e5);
+    log.exercises.forEach(ex => {
+      const timed = ex.time > 0;
+      const done = ex.entries.filter(e => e.done);
+      if(!done.length) return;
+      if(date >= week){
+        sets += done.length;
+        if(!timed) done.forEach(e => { lifted += num(e.w) * num(e.r); });
+      }
+      if(daysAgo < 0 || daysAgo > 34) return;
+      const weighted = !timed && done.some(e => num(e.w) > 0);
+      const score = maxOf(done.map(e => (weighted ? num(e.w) * (1 + num(e.r) / 30) : num(e.r))));
+      if(!score) return;
+      const k = normName(ex.name) + (weighted ? '|w' : '|n'); // only compare like with like
+      const b = best[k] || (best[k] = {name:ex.name, recent:0, weeks:[0, 0, 0, 0]});
+      if(daysAgo <= 6) b.recent = Math.max(b.recent, score);
+      else b.weeks[Math.floor((daysAgo - 7) / 7)] = Math.max(b.weeks[Math.floor((daysAgo - 7) / 7)], score);
+    });
+  });
+  const changes = Object.values(best).filter(b => b.recent > 0 && b.weeks.some(v => v > 0)).map(b => {
+    const prior = b.weeks.filter(v => v > 0);
+    const usual = prior.reduce((a, v) => a + v, 0) / prior.length;
+    return {name:b.name, pct:(b.recent - usual) / usual * 100};
+  });
+  const improvement = changes.length ? Math.round(changes.reduce((a, c) => a + c.pct, 0) / changes.length * 10) / 10 : null;
+  const top = changes.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))[0];
+  const impTop = top ? `${top.name} ${top.pct >= 0 ? '+' : '−'}${Math.abs(Math.round(top.pct))}%` : '';
+  return {streak:workoutStats().streak, improvement, impTop, lifted:Math.round(lifted), sets, week};
+}
+
+// Sends this phone's numbers when they've changed, and at least once a day so the row stays current.
+async function syncLeaderboard(force = false){
+  const lb = getLb();
+  if(lb && lb.pendingLeave){
+    if(await lbRequest('/lb/leave')) saveJSON('wt_lb', {name:lb.name, on:false});
+    return;
+  }
+  if(!lbOn()) return;
+  const payload = {name:lb.name, ...leaderboardStats()};
+  const stamp = JSON.stringify(payload) + dateKey(today0());
+  if(!force && localStorage.getItem('wt_lbsent') === stamp) return;
+  if(await lbRequest('/lb/update', payload)) localStorage.setItem('wt_lbsent', stamp);
+}
+
+function goLeaders(){
+  showScreen('leaders');
+  if(lbState !== 'ready') lbState = 'loading';
+  renderLeaders();
+  refreshLeaders();
+}
+async function refreshLeaders(){
+  await syncLeaderboard();
+  const data = await lbRequest('/lb/board');
+  if(data){ lbData = data; lbState = 'ready'; }
+  else if(!lbData) lbState = 'error';
+  if(currentScreen === 'leaders') renderLeaders();
+}
+function setLbTab(k){ lbTab = k; renderLeaders(); }
+
+const LB_TABS = {
+  streak:{label:'Streak', about:'Weeks in a row with a workout',
+    value:p => p.streak, show:p => String(p.streak), unit:p => (p.streak === 1 ? 'week' : 'weeks'),
+    sub:p => (p.lifted ? `${fmtBig(p.lifted)} ${UNIT} this week` : 'Nothing lifted yet this week'),
+    gap:d => `${d} ${d === 1 ? 'week' : 'weeks'}`},
+  improvement:{label:'Improvement', about:'Stronger or weaker than their last 4 weeks',
+    value:p => p.improvement, show:p => (p.improvement == null ? '—' : `${p.improvement > 0 ? '+' : p.improvement < 0 ? '−' : ''}${Math.abs(p.improvement).toFixed(1)}%`),
+    unit:p => (p.improvement == null ? '' : 'vs. usual'),
+    sub:p => (p.improvement == null ? 'Not enough history yet' : `Biggest change: ${p.impTop}`),
+    gap:d => `${d.toFixed(1)} points`},
+  lifted:{label:'Lifted', about:'Weight × reps this week. Resets Monday',
+    value:p => p.lifted, show:p => fmtBig(p.lifted), unit:() => UNIT,
+    sub:p => (p.sets ? plural(p.sets, 'set') + ' this week' : 'Nothing lifted yet this week'),
+    gap:d => `${fmtBig(d)} ${UNIT}`},
+};
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+function initials(name){
+  const words = name.trim().split(/\s+/);
+  const chars = words.length > 1 ? [Array.from(words[0])[0], Array.from(words[1])[0]] : Array.from(words[0]).slice(0, 2);
+  return chars.join('').toUpperCase();
+}
+
+function renderLeaders(){
+  const tab = LB_TABS[lbTab];
+  $('lb-about').textContent = tab.about;
+  $('lb-seg').innerHTML = Object.entries(LB_TABS).map(([k, v]) =>
+    `<button class="${k === lbTab ? 'active' : ''}" aria-pressed="${k === lbTab}" onclick="setLbTab('${k}')">${v.label}</button>`).join('');
+  $('lb-join').hidden = lbOn();
+  const box = $('lb-list');
+  if(lbState === 'loading' && !lbData){ box.innerHTML = '<p class="lb-note">Loading the leaderboard…</p>'; $('lb-gap').textContent = ''; return; }
+  if(lbState === 'error' && !lbData){
+    box.innerHTML = `<div class="empty"><p class="empty-title">Couldn't load the leaderboard</p><p>Check your connection, then try again.</p></div>
+      <button class="btn btn-secondary" onclick="goLeaders()">Try again</button>`;
+    $('lb-gap').textContent = '';
+    return;
+  }
+  const players = (lbData && lbData.players) || [];
+  if(!players.length){
+    box.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.trophy}</div>
+      <p class="empty-title">No one's on the board yet</p><p>Join with a nickname and be the first.</p></div>`;
+    $('lb-gap').textContent = '';
+    return;
+  }
+
+  const ranked = players.filter(p => tab.value(p) != null).sort((a, b) => tab.value(b) - tab.value(a));
+  const unranked = players.filter(p => tab.value(p) == null);
+  let rank = 0, prev = null;
+  const row = (p, r) => {
+    const v = tab.value(p);
+    const medal = r && r <= 3 && v > 0 ? MEDALS[r - 1] : '';
+    const tone = lbTab === 'improvement' && v != null ? (v > 0 ? ' lb-up' : v < 0 ? ' lb-down' : '') : '';
+    return `<div class="lb-row${p.me ? ' is-me' : ''}">
+      <span class="lb-rank${medal ? ' lb-medal' : ''}" aria-label="${r ? 'Rank ' + r : 'Not ranked'}">${medal || (r || '–')}</span>
+      <span class="lb-av" aria-hidden="true">${esc(initials(p.name))}</span>
+      <span class="lb-text">
+        <span class="lb-name"><span class="lb-name-text">${esc(p.name)}</span>${p.me ? '<span class="today-tag">You</span>' : ''}</span>
+        <span class="lb-sub">${esc(tab.sub(p))}</span>
+      </span>
+      <span class="lb-val"><span class="lb-num${tone}">${tab.show(p)}</span><span class="lb-unit">${tab.unit(p)}</span></span>
+    </div>`;
+  };
+  box.innerHTML = ranked.map((p, i) => {
+    if(tab.value(p) !== prev){ rank = i + 1; prev = tab.value(p); }
+    return row(p, rank);
+  }).join('') + unranked.map(p => row(p, 0)).join('');
+
+  const me = players.find(p => p.me);
+  const gap = $('lb-gap');
+  if(!me || tab.value(me) == null){ gap.textContent = ''; return; }
+  const ahead = ranked.filter(p => tab.value(p) > tab.value(me));
+  gap.textContent = ahead.length ? `You're ${tab.gap(tab.value(ahead.at(-1)) - tab.value(me))} behind ${ahead.at(-1).name}` : 'You\'re in first place';
+}
+
+function askNickname(current){
+  const check = (wrap, close) => {
+    const name = wrap.querySelector('#nick-in').value.replace(/\s+/g, ' ').trim();
+    if(Array.from(name).length < 2 || Array.from(name).length > 20){ wrap.querySelector('#nick-err').hidden = false; return; }
+    close(name);
+  };
+  return sheet({
+    title:current ? 'Change nickname' : 'Pick a nickname',
+    body:'Others see this nickname and your totals, nothing else.',
+    html:`<input class="text-in" id="nick-in" maxlength="20" autocomplete="nickname" autocapitalize="words"
+            enterkeyhint="done" placeholder="Nickname" value="${esc(current || '')}" aria-label="Nickname">
+          <p class="sheet-error" id="nick-err" hidden>Use 2 to 20 characters.</p>`,
+    dialog:true,
+    actions:[{label:'Cancel', value:null}, {label:'Save', kind:'btn-primary', onClick:(wrap, close) => { check(wrap, close); return false; }}],
+    onMount:(wrap, close) => {
+      const inp = wrap.querySelector('#nick-in');
+      inp.focus();
+      inp.addEventListener('input', () => { wrap.querySelector('#nick-err').hidden = true; });
+      inp.addEventListener('keydown', e => { if(e.key === 'Enter') check(wrap, close); });
+    },
+  });
+}
+
+async function joinLeaderboard(){
+  const prev = getLb();
+  const name = await askNickname(prev && prev.name);
+  if(!name){ if(currentScreen === 'settings') renderSettings(); return; }
+  saveJSON('wt_lb', {name, on:true});
+  localStorage.removeItem('wt_lbsent');
+  toast(`You're on the leaderboard as ${name}`, 'ok');
+  if(currentScreen === 'settings') renderSettings();
+  await syncLeaderboard(true);
+  if(currentScreen === 'leaders') refreshLeaders();
+}
+
+async function editNickname(){
+  const lb = getLb();
+  const name = await askNickname(lb && lb.name);
+  if(!name) return;
+  saveJSON('wt_lb', {name, on:true});
+  renderSettings();
+  await syncLeaderboard(true);
+  toast('Nickname updated', 'ok');
+}
+
+async function leaveLeaderboard(){
+  const lb = getLb() || {};
+  const ok = await lbRequest('/lb/leave');
+  // If the phone is offline, remember to finish leaving next time it's online.
+  saveJSON('wt_lb', {name:lb.name, on:false, pendingLeave:!ok});
+  localStorage.removeItem('wt_lbsent');
+  lbData = null;
+  lbState = 'idle';
+  toast('You\'re off the leaderboard');
+  renderSettings();
+}
+
+function onLbToggle(el){ if(el.checked) joinLeaderboard(); else leaveLeaderboard(); }
+
 /* ================= Settings ================= */
 function goSettings(){ showScreen('settings'); renderSettings(); }
 
@@ -1092,6 +1314,12 @@ function renderSettings(){
     support === 'unsupported' && isIOS && !isStandalone() ? 'Add this app to your Home Screen first (Share, then Add to Home Screen), then open it from there' :
     support === 'unsupported' ? 'Not available in this browser' :
     'Get an alert when rest is over, even with your phone locked';
+
+  const lb = getLb();
+  $('lb-toggle').checked = lbOn();
+  $('lb-sub').textContent = lbOn() ? `On as ${lb.name}` : 'Off. Only a nickname and your totals are shared';
+  $('lb-name-row').hidden = !lbOn();
+  $('lb-name').textContent = lbOn() ? lb.name : '';
 
   const s = getSettings();
   const row = $('bf-row');
@@ -1600,7 +1828,9 @@ function init(){
     if(document.hidden) return;
     resumeTimer();
     checkIn();
+    syncLeaderboard();
     if(currentScreen === 'week') renderWeek();
+    if(currentScreen === 'leaders') refreshLeaders();
   });
   window.addEventListener('resize', debounce(() => { if(currentScreen === 'progress-detail') renderProgressDetail(); }, 150));
   document.addEventListener('keydown', e => { if(e.key === 'Escape' && viewer.open) closeViewer(); });
@@ -1608,6 +1838,7 @@ function init(){
   goWeek();
   resumeTimer();
   checkIn();
+  syncLeaderboard();
 
   if('serviceWorker' in navigator){
     const hadController = !!navigator.serviceWorker.controller;
