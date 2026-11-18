@@ -352,7 +352,50 @@ function renderExercises(){
 }
 
 function findEx(id){ return cur.log.exercises.find(e => e.id === id); }
-function saveDay(){ saveLog(cur.key, cur.log); }
+function saveDay(){
+  delete cur.log.auto; // a day someone actually opened and changed is no longer an automatic entry
+  saveLog(cur.key, cur.log);
+}
+
+// Days that go by without the app being opened still count. Every past day with nothing saved is
+// recorded from the plan as it is now: planned exercises with no sets done (missed), or rest if it's
+// a weekly rest day. Writing them down keeps history fixed even if the plan changes later.
+function closeOutPastDays(){
+  const s = getSettings();
+  const yesterday = addDays(today0(), -1);
+  let start;
+  if(s.closedThrough){
+    start = addDays(parseKey(s.closedThrough), 1);
+  } else {
+    // First run: go back to the first day anything was ever logged, but no more than a year.
+    const first = allLogs()[0];
+    start = first ? parseKey(first.date) : today0();
+  }
+  const floor = addDays(today0(), -365);
+  if(start < floor) start = floor;
+  if(start <= yesterday){
+    const plan = getPlan(), rest = getRest();
+    for(let d = new Date(start); d <= yesterday; d = addDays(d, 1)){
+      const key = dateKey(d);
+      if(localStorage.getItem('wt_log_' + key) !== null) continue;
+      const dayName = DAYS[dayIndex(d)];
+      if(rest[dayName]){
+        saveLog(key, {day:dayName, isRest:true, auto:true, exercises:[]});
+        continue;
+      }
+      const exs = plan[dayName] || [];
+      if(!exs.length) continue;
+      saveLog(key, {day:dayName, isRest:false, auto:true, exercises:exs.map(t => ({
+        id:t.id, name:t.name, sets:t.sets, reps:t.reps, weight:t.weight || 0, time:t.time,
+        restSeconds:t.restSeconds || 0, entries:Array.from({length:t.sets}, blankEntry),
+      }))});
+    }
+  }
+  if(s.closedThrough !== dateKey(yesterday)){
+    s.closedThrough = dateKey(yesterday);
+    saveSettings(s);
+  }
+}
 function replaceCard(exId){
   const old = document.querySelector(`.ex-card[data-ex="${exId}"]`);
   if(old) old.replaceWith(buildCard(findEx(exId)));
@@ -852,6 +895,7 @@ function renderHistDetail(){
   } else {
     const shown = log.exercises.filter(ex => ex.entries.some(e => e.done) || !log.backfilled);
     if(log.backfilled && !shown.length) body = '<p class="detail-note">Worked out. Added from the calendar.</p>';
+    if(log.auto && s === 'missed') body = '<p class="detail-note">The app wasn\'t opened this day.</p>';
     shown.forEach(ex => {
       const timed = ex.time > 0;
       const done = ex.entries.filter(e => e.done);
@@ -1826,6 +1870,7 @@ function init(){
 
   document.addEventListener('visibilitychange', () => {
     if(document.hidden) return;
+    closeOutPastDays(); // the app may have sat in the background past midnight
     resumeTimer();
     checkIn();
     syncLeaderboard();
@@ -1835,6 +1880,7 @@ function init(){
   window.addEventListener('resize', debounce(() => { if(currentScreen === 'progress-detail') renderProgressDetail(); }, 150));
   document.addEventListener('keydown', e => { if(e.key === 'Escape' && viewer.open) closeViewer(); });
 
+  closeOutPastDays();
   goWeek();
   resumeTimer();
   checkIn();
