@@ -7,9 +7,9 @@ if(!Array.prototype.at) Array.prototype.at = function(i){ i = Math.trunc(i) || 0
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const UNIT = 'lb';
-// SHA-256 of the backfill code word, so the word itself isn't sitting in the source.
-const BACKFILL_CODE_HASH = '2d57614242936ea197f8d41de38d10f93e4165bfe265f61f4b785e6cc4b078f8';
-const BACKFILL_MONTHS = 2;
+// SHA-256 of the past-workouts password, so the word itself isn't sitting in the source.
+const PAST_EDIT_HASH = '3c80353d976990411bc5cce809a682a031da8b1402a223d8688858d6140df730';
+const UNLOCK_MINUTES = 10;
 const MAX_VIDEO_MB = 300;
 // Server for rest alerts, usage counts and the leaderboard (source: APPS/workout-push).
 // Previews talk to a local copy (`wrangler dev`) so testing never touches the real board.
@@ -17,7 +17,7 @@ const IS_PREVIEW = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 const PUSH_URL = IS_PREVIEW ? 'http://127.0.0.1:8787' : 'https://workout-push.marcomorocho11.workers.dev';
 const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
 // Per-phone keys that never go into a backup file.
-const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push', 'wt_lastping', 'wt_lb', 'wt_lbsent'];
+const DEVICE_KEYS = ['wt_timer', 'wt_device', 'wt_push', 'wt_lastping', 'wt_lb', 'wt_lbsent', 'wt_unlock'];
 
 const icon = (d, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
@@ -34,16 +34,13 @@ const ICON = {
   video: icon('<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/>'),
   flame: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6 2.3c.4 2.9-.7 4.6-2.1 6.2C9 10.1 7.5 11.7 7.5 14.6A4.5 4.5 0 0 0 12 19.2a4.6 4.6 0 0 0 4.6-4.6c0-1.6-.6-2.8-1.3-3.7-.2 1.3-.9 2.1-1.8 2.4.6-2.9-.1-6.6-.9-11z"/></svg>',
   lock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
+  unlock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 6.8-1.2"/>'),
   calCheck: icon('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
   trophy: icon('<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/>'),
   chart: icon('<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5L19.5 8"/>'),
 };
-const COACH_ICON = {
-  up: icon('<path d="M12 19V5M6 11l6-6 6 6"/>', 2.6),
-  hold: icon('<path d="M6 9.5h12M6 14.5h12"/>', 2.6),
-  down: icon('<path d="M12 5v14M6 13l6 6 6-6"/>', 2.6),
-  back: icon('<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>', 2.4),
-};
+// Light bulb for every suggestion; its tint still says up, hold, lighter or easing back in.
+const BULB = icon('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>', 2.2);
 const STATUS_ICON = {
   done: ICON.check, partial: ICON.dot, missed: ICON.x, rest: ICON.moon,
   today: ICON.arrow, upcoming: '', none: ICON.dash,
@@ -179,15 +176,38 @@ function workedOut(log){
 }
 const STATUS_LABEL = {done:'Done', partial:'Partly done', missed:'Missed', rest:'Rest day'};
 
+// A week keeps the streak going when you did all but one of its planned workouts
+// (at least one). This week adds to the streak once it qualifies and never breaks it early.
+const weekCounts = (planned, done) => done >= Math.max(1, planned - 1);
+
 function workoutStats(){
-  const worked = allLogs().filter(x => workedOut(x.log)).map(x => x.date);
-  const weeks = new Set(worked.map(d => dateKey(startOfWeek(parseKey(d)))));
-  // This week only adds to the streak once you've trained; it never breaks it.
-  let w = startOfWeek(today0());
-  if(!weeks.has(dateKey(w))) w = addDays(w, -7);
-  let streak = 0;
-  while(weeks.has(dateKey(w))){ streak++; w = addDays(w, -7); }
-  const month = dateKey(today0()).slice(0, 7);
+  const logs = allLogs();
+  const worked = logs.filter(x => workedOut(x.log)).map(x => x.date);
+  const weeks = new Map();
+  logs.forEach(({date, log}) => {
+    const k = dateKey(startOfWeek(parseKey(date)));
+    const w = weeks.get(k) || {planned:0, done:0};
+    if(workedOut(log)){ w.planned++; w.done++; }
+    else if(!log.isRest && log.exercises.length) w.planned++;
+    weeks.set(k, w);
+  });
+
+  // This week counts every planned day, including the ones still ahead.
+  const t = today0(), monday = startOfWeek(t), plan = getPlan(), rest = getRest();
+  const byDate = new Map(logs.map(x => [x.date, x.log]));
+  let planned = 0, done = 0;
+  for(let i = 0; i < 7; i++){
+    const log = byDate.get(dateKey(addDays(monday, i)));
+    if(workedOut(log)){ planned++; done++; }
+    else if(log ? !log.isRest && log.exercises.length : !rest[DAYS[i]] && (plan[DAYS[i]] || []).length) planned++;
+  }
+  let streak = weekCounts(planned, done) ? 1 : 0;
+  for(let w = addDays(monday, -7); ; w = addDays(w, -7)){
+    const s = weeks.get(dateKey(w));
+    if(!s || !weekCounts(s.planned, s.done)) break;
+    streak++;
+  }
+  const month = dateKey(t).slice(0, 7);
   return {streak, month: worked.filter(d => d.startsWith(month)).length, total: worked.length};
 }
 
@@ -225,8 +245,7 @@ function goWeek(){ showScreen('week'); renderWeek(); }
 
 function renderWeek(){
   const plan = getPlan(), rest = getRest(), dates = weekDates(), t = today0();
-  $('week-eyebrow').textContent = fmtLong(t);
-  $('week-range').textContent = `${fmtShort(dates[0])} – ${fmtShort(dates[6])}`;
+  $('week-date').textContent = `${DAYS[dayIndex(t)].slice(0, 3)}, ${fmtShort(t)}`;
 
   let planned = 0, worked = 0;
   const rows = dates.map((d, i) => {
@@ -273,22 +292,31 @@ function renderWeek(){
 }
 
 /* ================= Day ================= */
-const cur = {idx:null, date:null, key:null, log:null, planIds:new Set(), prev:{}, best:{}};
+const cur = {idx:null, date:null, key:null, log:null, past:false, planIds:new Set(), prev:{}, best:{}};
 
-function goDay(i){
-  const d = weekDates()[i];
-  Object.assign(cur, {idx:i, date:d, key:dateKey(d)});
+function goDay(i){ goDayDate(weekDates()[i]); }
+
+// Days before this week are "past": only open while past editing is unlocked, and edits stay on that day.
+function goDayDate(d){
+  const past = d < startOfWeek(today0());
+  if(past && !isUnlocked()){ openPastEditor(); return; }
+  Object.assign(cur, {idx:dayIndex(d), date:d, key:dateKey(d), past});
   showScreen('day');
   setDockButton('Done', finishDay);
   renderDay();
 }
 function finishDay(){
   syncLeaderboard();
-  goWeek();
+  if(cur.past) goPastPicker(); else goWeek();
 }
 
-// Today's log, merged with the current weekly plan.
+// The day's log. This week's days are merged with the current weekly plan;
+// a past day keeps exactly what it had (or starts from the plan if nothing was saved).
 function buildDayLog(dayName, key){
+  if(cur.past){
+    const saved = getLog(key);
+    if(saved) return saved;
+  }
   const template = getPlan()[dayName] || [];
   const log = getLog(key) || {day:dayName, isRest:false, exercises:[]};
   const byId = new Map(log.exercises.map(e => [e.id, e]));
@@ -416,22 +444,36 @@ function renderDay(){
   const isToday = +cur.date === +today0();
   $('day-eyebrow').textContent = fmtShort(cur.date) + (isToday ? ' · Today' : '');
   $('day-title').textContent = dayName;
-  $('rest-sub').textContent = `Repeats every ${dayName}`;
   cur.log = buildDayLog(dayName, cur.key);
-  cur.planIds = new Set((getPlan()[dayName] || []).map(e => e.id));
+  // In a past day every exercise belongs to that day, so all of them can be edited there.
+  cur.planIds = new Set((cur.past ? cur.log.exercises : getPlan()[dayName] || []).map(e => e.id));
+  cur.baseOrder = new Map(cur.log.exercises.map((e, i) => [e.id, i]));
+  sortExercises();
   Object.assign(cur, indexHistory(cur.key));
   cur.coach = {};
   cur.log.exercises.forEach(ex => { cur.coach[ex.id] = coach(ex); });
   $('rest-toggle').checked = !!cur.log.isRest;
+  if(cur.past) updateUnlockLabels();
   renderExercises();
+}
+
+// Exercises you've started move to the top in the order you started them; the rest keep plan order.
+function sortExercises(){
+  const order = (e) => cur.baseOrder.get(e.id) ?? 999;
+  const started = (e) => e.entries.some(x => x.done);
+  cur.log.exercises.sort((a, b) => {
+    const sa = started(a), sb = started(b);
+    if(sa !== sb) return sa ? -1 : 1;
+    if(sa) return (a.startedAt || 0) - (b.startedAt || 0) || order(a) - order(b);
+    return order(a) - order(b);
+  });
 }
 
 function renderExercises(){
   const list = $('exercise-list');
   if(cur.log.isRest){
     $('add-ex-btn').hidden = true;
-    list.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.moon}</div>
-      <p class="empty-title">Rest day</p><p>Recovery is part of the plan. Turn off rest day to log a workout.</p></div>`;
+    list.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.moon}</div><p class="empty-title">Rest day</p></div>`;
     return;
   }
   $('add-ex-btn').hidden = false;
@@ -568,7 +610,7 @@ function buildCard(ex){
       </button>
       ${inPlan ? `<button class="icon-btn" onclick="openEditExercise('${ex.id}')" aria-label="Edit ${esc(ex.name)}">${ICON.more}</button>` : ''}
     </div>
-    ${tip ? `<p class="coach coach-${tip.kind}"><span class="coach-icon" aria-hidden="true">${COACH_ICON[tip.kind]}</span>
+    ${tip ? `<p class="coach coach-${tip.kind}"><span class="coach-icon" aria-hidden="true">${BULB}</span>
       <span><b>${esc(coachHeadline(tip, timed))}.</b> ${esc(tip.text)}</span></p>` : ''}
     <div class="set-row set-head" aria-hidden="true"><span>Set</span><span>Previous</span><span>${UNIT}</span><span>${timed ? 'Sec' : 'Reps'}</span><span></span></div>
     ${rows}`;
@@ -587,20 +629,31 @@ function toggleSet(exId, i){
     const w = num(e.w), best = cur.best[normName(ex.name)];
     const beatsToday = !ex.entries.some((o, j) => j !== i && o.done && num(o.w) >= w);
     if(w > 0 && best != null && w > best && beatsToday) toast(`${ex.name}: ${fmtNum(w)} ${UNIT}`, 'pr');
-    if(ex.restSeconds > 0) startRest(ex.restSeconds, ex.name);
+    if(!ex.startedAt) ex.startedAt = Date.now();
+    if(ex.restSeconds > 0 && !cur.past) startRest(ex.restSeconds, ex.name);
   } else {
     e.done = false;
+    if(!ex.entries.some(x => x.done)) delete ex.startedAt;
+    if(getTimer()) skipRest(); // an accidental tick shouldn't leave a rest timer running
   }
   saveDay();
-  replaceCard(exId);
+  const before = cur.log.exercises.map(x => x.id).join();
+  sortExercises();
+  if(cur.log.exercises.map(x => x.id).join() === before){ replaceCard(exId); return; }
+  renderExercises();
+  // A card that just moved up is the one you're working on, so bring it into view.
+  if(e.done) document.querySelector(`.ex-card[data-ex="${exId}"]`)?.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function toggleRest(){
   const on = $('rest-toggle').checked;
   cur.log.isRest = on;
-  const r = getRest();
-  r[DAYS[cur.idx]] = on;
-  saveRest(r);
+  // On a past day the switch only changes that day, not the weekly rest setting.
+  if(!cur.past){
+    const r = getRest();
+    r[DAYS[cur.idx]] = on;
+    saveRest(r);
+  }
   saveDay();
   renderExercises();
 }
@@ -617,7 +670,7 @@ function fillEditForm(t){
   $('edit-weight').value = num(t.weight) > 0 ? fmtNum(num(t.weight)) : '';
   $('edit-time').value = t.time || 0;
   $('edit-rest').value = t.restSeconds || 0;
-  $('edit-eyebrow').textContent = DAYS[cur.idx];
+  $('edit-eyebrow').textContent = cur.past ? `${fmtLong(cur.date)} only` : DAYS[cur.idx];
   const names = new Set();
   Object.values(getPlan()).flat().forEach(e => names.add(e.name));
   allLogs().forEach(x => x.log.exercises.forEach(e => names.add(e.name)));
@@ -635,7 +688,7 @@ function openAddExercise(){
 }
 
 function openEditExercise(exId){
-  const t = (getPlan()[DAYS[cur.idx]] || []).find(e => e.id === exId);
+  const t = cur.past ? findEx(exId) : (getPlan()[DAYS[cur.idx]] || []).find(e => e.id === exId);
   if(!t) return;
   editing = {id:exId, isNew:false, originalName:t.name};
   fillEditForm(t);
@@ -681,6 +734,19 @@ function submitExercise(){
   }
   const t = {name, sets:readStep('edit-sets'), reps:readStep('edit-reps'), weight:readStep('edit-weight'),
              time:readStep('edit-time'), restSeconds:readStep('edit-rest')};
+  // A past day's exercises live only in that day's log; the weekly plan is left alone.
+  if(cur.past){
+    if(editing.isNew){
+      cur.log.exercises.push({id:newId('ex'), ...t, entries:Array.from({length:t.sets}, blankEntry)});
+    } else {
+      const ex = findEx(editing.id);
+      Object.assign(ex, t);
+      fitEntries(ex, t.sets);
+    }
+    saveDay();
+    closeEdit();
+    return;
+  }
   const plan = getPlan();
   const dayName = DAYS[cur.idx];
   plan[dayName] = plan[dayName] || [];
@@ -699,6 +765,18 @@ function submitExercise(){
 
 async function deleteExercise(){
   const name = editing.originalName;
+  if(cur.past){
+    const ok = await sheet({
+      title:'Remove exercise?',
+      body:`${esc(name)} will be removed from ${fmtLong(cur.date)}, along with any sets logged for it that day.`,
+      actions:[{label:'Cancel', value:false}, {label:'Remove', kind:'btn-danger', value:true}],
+    });
+    if(!ok) return;
+    cur.log.exercises = cur.log.exercises.filter(e => e.id !== editing.id);
+    saveDay();
+    closeEdit();
+    return;
+  }
   const shared = nameUsedElsewhere(name, editing.id);
   const vids = shared ? 0 : videosFor(name).length;
   const ok = await sheet({
@@ -755,11 +833,13 @@ function stopTimer(){
   $('rest-bar').hidden = true;
   setDockHeight();
 }
+// Adjust the running rest by `sec` (the button takes 15 seconds off). Cutting it to nothing just ends it.
 function addRest(sec){
   const t = getTimer();
   if(!t) return;
   t.endsAt += sec * 1000;
-  t.total += sec;
+  if(sec > 0) t.total += sec;
+  if(t.endsAt - Date.now() < 1000){ skipRest(); return; }
   if(getPushSub()){ t.pushed = true; schedulePush(t); }
   saveJSON('wt_timer', t);
   paintTimer();
@@ -987,7 +1067,8 @@ function renderHistDetail(){
   const log = getLog(histSelected);
   const s = logStatus(log);
   const ws = weekDates();
-  const editable = d >= ws[0] && d <= today0();
+  // This week's days can always be opened; earlier days only while past editing is unlocked.
+  const editable = (d >= ws[0] || isUnlocked()) && d <= today0();
   let body = '';
   if(!log || !s){
     body = '<p class="detail-note">Nothing logged this day.</p>';
@@ -1012,7 +1093,7 @@ function renderHistDetail(){
       ${s ? `<span class="pill pill-${s}">${STATUS_LABEL[s]}</span>` : ''}
     </div>
     ${body}
-    ${editable ? `<button class="btn" onclick="goDay(${dayIndex(d)})">Open ${DAYS[dayIndex(d)]}</button>` : ''}
+    ${editable ? `<button class="btn" onclick="goDayDate(parseKey('${histSelected}'))">${d >= ws[0] ? 'Open' : 'Edit'} ${DAYS[dayIndex(d)]}</button>` : ''}
   </div>`;
 }
 
@@ -1078,19 +1159,93 @@ function renderProgress(){
       <p class="empty-title">Nothing to chart yet</p><p>Type your weight and reps on each set while you work out. Your progress shows up here.</p></div>`;
     return;
   }
-  $('prog-list').innerHTML = progressItems.map((item, i) => {
+  const row = (item, i) => {
     const m = metricDefs(item)[0];
     const values = item.sessions.map(m.calc).filter(v => v > 0);
     const best = maxOf(values);
-    return `<button class="prog-row" onclick="openProgress(${i})">
-      <span class="prog-text">
-        <span class="prog-name">${esc(item.name)}</span>
-        <span class="prog-sub">Best ${fmtVal(best)} ${m.unit} · ${plural(item.sessions.length, 'workout')}</span>
-      </span>
-      ${sparkline(values.slice(-12))}
-      <span class="chev">${ICON.chevron}</span>
-    </button>`;
+    return `<div class="swipe">
+      <button class="swipe-del" onclick="deleteProgressItem(${i})">Delete</button>
+      <button class="prog-row swipe-front" data-i="${i}">
+        <span class="prog-text">
+          <span class="prog-name">${esc(item.name)}</span>
+          <span class="prog-sub">Best ${fmtVal(best)} ${m.unit} · ${plural(item.sessions.length, 'workout')}</span>
+        </span>
+        ${sparkline(values.slice(-12))}
+        <span class="chev">${ICON.chevron}</span>
+      </button>
+    </div>`;
+  };
+  // Grouped by the weekday each exercise is done on (an exercise done on two days shows under both).
+  $('prog-list').innerHTML = DAYS.map((day, d) => {
+    const items = progressItems.map((item, i) => ({item, i}))
+      .filter(({item}) => item.sessions.some(s => dayIndex(parseKey(s.date)) === d));
+    return items.length ? `<p class="section-label">${day}</p>${items.map(({item, i}) => row(item, i)).join('')}` : '';
   }).join('');
+}
+
+// Swipe a row left to show Delete; a tap on a row that didn't move opens it.
+function initProgressSwipe(){
+  const list = $('prog-list');
+  const OPEN = -88;
+  let drag = null, moved = false;
+  const setX = (el, x, animate) => {
+    el.style.transition = animate ? '' : 'none';
+    el.style.transform = x ? `translateX(${x}px)` : '';
+    el.dataset.x = x;
+  };
+  const closeAll = (except) => list.querySelectorAll('.swipe-front').forEach(f => { if(f !== except && +f.dataset.x) setX(f, 0, true); });
+  list.addEventListener('pointerdown', e => {
+    const front = e.target.closest('.swipe-front');
+    if(!front) return;
+    drag = {front, x0:e.clientX, y0:e.clientY, base:+front.dataset.x || 0, active:false, id:e.pointerId};
+    moved = false;
+  });
+  list.addEventListener('pointermove', e => {
+    if(!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if(!drag.active){
+      if(Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return;
+      drag.active = true;
+      moved = true;
+      closeAll(drag.front);
+      try{ drag.front.setPointerCapture(e.pointerId); }catch(err){} // keeps the drag if the finger leaves the row
+    }
+    setX(drag.front, Math.max(OPEN - 24, Math.min(0, drag.base + dx)), false);
+  });
+  const end = () => {
+    if(!drag) return;
+    if(drag.active) setX(drag.front, +drag.front.dataset.x < OPEN / 2 ? OPEN : 0, true);
+    drag = null;
+  };
+  list.addEventListener('pointerup', end);
+  list.addEventListener('pointercancel', end);
+  list.addEventListener('click', e => {
+    const front = e.target.closest('.swipe-front');
+    if(!front) return;
+    if(moved){ moved = false; return; }
+    if(+front.dataset.x){ setX(front, 0, true); return; }
+    closeAll();
+    openProgress(+front.dataset.i);
+  });
+}
+
+// Deletes every logged set of that exercise from history (after an "are you sure").
+async function deleteProgressItem(i){
+  const item = progressItems[i];
+  if(!item) return;
+  const ok = await sheet({
+    title:`Delete ${esc(item.name)}?`,
+    body:`Are you sure you want to delete this workout? All ${plural(item.sessions.length, 'logged workout')} of ${esc(item.name)} will be removed from your history. This can't be undone.`,
+    actions:[{label:'Cancel', value:false}, {label:'Delete', kind:'btn-danger', value:true}],
+  });
+  if(!ok){ renderProgress(); return; }
+  allLogs().forEach(({date, log}) => {
+    const kept = log.exercises.filter(ex => normName(ex.name) !== item.key);
+    if(kept.length !== log.exercises.length){ log.exercises = kept; saveLog(date, log); }
+  });
+  toast(`${item.name} deleted`);
+  renderProgress();
+  syncLeaderboard();
 }
 
 function openProgress(i){
@@ -1319,7 +1474,7 @@ const LB_TABS = {
   improvement:{label:'Improvement', about:'Stronger or weaker than their last 4 weeks',
     value:p => p.improvement, show:p => (p.improvement == null ? '—' : `${p.improvement > 0 ? '+' : p.improvement < 0 ? '−' : ''}${Math.abs(p.improvement).toFixed(1)}%`),
     unit:p => (p.improvement == null ? '' : 'vs. usual'),
-    sub:p => (p.improvement == null ? 'Not enough history yet' : `Biggest change: ${p.impTop}`),
+    sub:p => (p.improvement == null ? 'Not enough history yet' : ''),
     gap:d => `${d.toFixed(1)} points`},
   lifted:{label:'Lifted', about:'Weight × reps this week. Resets Monday',
     value:p => p.lifted, show:p => fmtBig(p.lifted), unit:() => UNIT,
@@ -1368,7 +1523,7 @@ function renderLeaders(){
       <span class="lb-av" aria-hidden="true">${esc(initials(p.name))}</span>
       <span class="lb-text">
         <span class="lb-name"><span class="lb-name-text">${esc(p.name)}</span>${p.me ? '<span class="today-tag">You</span>' : ''}</span>
-        <span class="lb-sub">${esc(tab.sub(p))}</span>
+        ${tab.sub(p) ? `<span class="lb-sub">${esc(tab.sub(p))}</span>` : ""}
       </span>
       <span class="lb-val"><span class="lb-num${tone}">${tab.show(p)}</span><span class="lb-unit">${tab.unit(p)}</span></span>
     </div>`;
@@ -1454,7 +1609,7 @@ function renderSettings(){
   $('push-toggle').disabled = support !== 'ok';
   $('push-row').classList.toggle('is-used', support !== 'ok');
   $('push-sub').textContent =
-    pushOn ? 'On. Works even with your phone locked' :
+    pushOn ? '' :
     support === 'denied' ? 'Blocked. Allow notifications for Workouts in your phone\'s Settings' :
     support === 'unsupported' && isIOS && !isStandalone() ? 'Add this app to your Home Screen first (Share, then Add to Home Screen), then open it from there' :
     support === 'unsupported' ? 'Not available in this browser' :
@@ -1462,52 +1617,46 @@ function renderSettings(){
 
   const lb = getLb();
   $('lb-toggle').checked = lbOn();
-  $('lb-sub').textContent = lbOn() ? `On as ${lb.name}` : 'Off. Only a nickname and your totals are shared';
+  $('lb-sub').textContent = lbOn() ? '' : 'Off. Only a nickname and your totals are shared';
   $('lb-name-row').hidden = !lbOn();
   $('lb-name').textContent = lbOn() ? lb.name : '';
 
-  const s = getSettings();
-  const row = $('bf-row');
-  if(s.backfillUsedAt){
-    row.classList.add('is-used');
-    $('bf-icon').innerHTML = ICON.check;
-    $('bf-sub').textContent = `Already used on ${fmtShort(parseKey(s.backfillUsedAt))}`;
-  } else {
-    row.classList.remove('is-used');
-    $('bf-icon').innerHTML = ICON.lock;
-    $('bf-sub').textContent = `Mark days from the last ${BACKFILL_MONTHS} months. Needs a code`;
-  }
+  $('bf-icon').innerHTML = isUnlocked() ? ICON.unlock : ICON.lock;
+  updateUnlockLabels();
   const all = Object.values(getVideoMeta()).flat();
   const bytes = all.reduce((t, v) => t + (v.size || 0), 0);
   $('video-usage').textContent = all.length ? `${plural(all.length, 'video')} · ${fmtBytes(bytes)} on this phone` : 'No form videos yet';
   $('backup-videos-sub').textContent = all.length ? `Adds ${fmtBytes(bytes)} to the file` : 'No videos to include yet';
 }
 
-/* ================= Backfill (code word, one time only) ================= */
-let backfillSel = new Set();
+/* ================= Past workouts (password, 10 minutes) =================
+   The password unlocks any past day for 10 minutes: add or edit its workout in the normal
+   day screen. It can be unlocked again any time. */
+const unlockedUntil = () => Number(localStorage.getItem('wt_unlock')) || 0;
+const isUnlocked = () => unlockedUntil() > Date.now();
+let unlockTick = null;
 
 async function sha256(text){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function openBackfill(){
-  const s = getSettings();
-  if(s.backfillUsedAt){ toast('Past workouts were already added. This only works once.'); return; }
+async function openPastEditor(){
+  if(isUnlocked()){ goPastPicker(); return; }
   if(!window.crypto || !crypto.subtle){ toast('Open the app from its normal web address to use this', 'error'); return; }
   const check = async (wrap, close) => {
     const inp = wrap.querySelector('#code-in');
-    if(await sha256(inp.value.trim().toUpperCase()) === BACKFILL_CODE_HASH){ close(true); return; }
+    if(await sha256(inp.value.trim().toUpperCase()) === PAST_EDIT_HASH){ close(true); return; }
     wrap.querySelector('#code-err').hidden = false;
     inp.classList.remove('shake'); void inp.offsetWidth; inp.classList.add('shake');
     inp.select();
   };
   const unlocked = await sheet({
-    title:'Enter code',
-    body:'Adding past workouts is locked. Enter the code to continue.',
-    html:`<input class="text-in code-in" id="code-in" autocomplete="off" autocapitalize="characters" autocorrect="off"
-            spellcheck="false" enterkeyhint="go" aria-label="Code">
-          <p class="sheet-error" id="code-err" hidden>That code isn't right.</p>`,
+    title:'Enter password',
+    body:'Editing past workouts is locked. The password unlocks it for 10 minutes.',
+    html:`<input class="text-in code-in" id="code-in" type="password" autocomplete="off" autocapitalize="none"
+            autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Password">
+          <p class="sheet-error" id="code-err" hidden>That password isn't right.</p>`,
     dialog:true,
     actions:[{label:'Cancel', value:false}, {label:'Unlock', kind:'btn-primary', onClick:(wrap, close) => { check(wrap, close); return false; }}],
     onMount:(wrap, close) => {
@@ -1517,73 +1666,72 @@ async function openBackfill(){
     },
   });
   if(!unlocked) return;
-  backfillSel = new Set();
+  localStorage.setItem('wt_unlock', String(Date.now() + UNLOCK_MINUTES * 60000));
+  startUnlockTick();
+  goPastPicker();
+}
+
+// Counts down the unlocked time; when it runs out, anyone still editing a past day is sent back.
+function startUnlockTick(){
+  clearInterval(unlockTick);
+  unlockTick = setInterval(() => {
+    if(isUnlocked()){ updateUnlockLabels(); return; }
+    clearInterval(unlockTick);
+    localStorage.removeItem('wt_unlock');
+    const editingPast = currentScreen === 'backfill' || ((currentScreen === 'day' || currentScreen === 'edit') && cur.past);
+    if(editingPast){
+      revokeEditUrls();
+      toast('Editing time is up');
+      goSettings();
+    } else if(currentScreen === 'settings') renderSettings();
+  }, 1000);
+}
+
+function updateUnlockLabels(){
+  const left = fmtClock(Math.max(0, Math.ceil((unlockedUntil() - Date.now()) / 1000)));
+  const on = isUnlocked();
+  if(currentScreen === 'settings'){
+    $('bf-sub').textContent = on ? `Unlocked · ${left} left` : 'Add or edit any past day. Needs a password';
+  }
+  if(currentScreen === 'backfill') $('past-left').textContent = on ? `${left} left` : '';
+  if(currentScreen === 'day' && cur.past && on){
+    $('day-eyebrow').textContent = `${fmtShort(cur.date)}, ${cur.date.getFullYear()} · ${left} left`;
+  }
+}
+
+function goPastPicker(){
+  if(!isUnlocked()){ openPastEditor(); return; }
   showScreen('backfill');
-  renderBackfill();
+  setDockButton('Done', goSettings);
+  renderPastPicker();
 }
 
-function backfillRange(){
-  const start = today0();
-  start.setMonth(start.getMonth() - BACKFILL_MONTHS);
-  return {start, end:addDays(today0(), -1)};
-}
-
-function renderBackfill(){
-  const {start, end} = backfillRange();
+// Every month back to the first logged day (at least 2 months, at most a year), newest first.
+function renderPastPicker(){
+  const t = today0();
+  const logs = allLogs();
+  const byDate = new Map(logs.map(x => [x.date, x.log]));
+  const twoMonths = new Date(t.getFullYear(), t.getMonth() - 2, 1);
+  const first = logs.length ? parseKey(logs[0].date) : twoMonths;
+  let start = first < twoMonths ? first : twoMonths;
+  const yearAgo = new Date(t.getFullYear() - 1, t.getMonth(), 1);
+  if(start < yearAgo) start = yearAgo;
   let html = '';
-  for(let cursor = new Date(start.getFullYear(), start.getMonth(), 1); cursor <= end; cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)){
-    const y = cursor.getFullYear(), m = cursor.getMonth();
-    html += `<div class="bf-month"><div class="bf-month-title">${MONTHS[m]} ${y}</div>${monthGrid(y, m, d => {
+  for(let m = new Date(t.getFullYear(), t.getMonth(), 1); m >= new Date(start.getFullYear(), start.getMonth(), 1);
+      m = new Date(m.getFullYear(), m.getMonth() - 1, 1)){
+    html += `<div class="bf-month"><div class="bf-month-title">${MONTHS[m.getMonth()]} ${m.getFullYear()}</div>${monthGrid(m.getFullYear(), m.getMonth(), d => {
       const k = dateKey(d);
-      if(d < start || d > end) return `<span class="cal-cell is-off">${d.getDate()}</span>`;
-      const log = getLog(k);
-      if(workedOut(log)) return `<span class="cal-cell bf-logged" aria-label="${fmtLong(d)}: already logged">${d.getDate()}</span>`;
-      if(log && log.isRest) return `<span class="cal-cell bf-rest" aria-label="${fmtLong(d)}: rest day">${d.getDate()}</span>`;
-      const on = backfillSel.has(k);
-      return `<button class="cal-cell bf-pick${on ? ' is-selected' : ''}" data-day="${k}" aria-pressed="${on}"
-        aria-label="${fmtLong(d)}" onclick="toggleBackfillDay('${k}')">${d.getDate()}</button>`;
+      const s = logStatus(byDate.get(k));
+      const cls = ['cal-cell'];
+      if(s) cls.push('st-' + s);
+      if(+d === +t) cls.push('is-today');
+      if(d > t) return `<span class="${cls.join(' ')} is-future">${d.getDate()}</span>`;
+      return `<button class="${cls.join(' ')}" onclick="goDayDate(parseKey('${k}'))"
+        aria-label="Edit ${fmtLong(d)}${s ? ': ' + STATUS_LABEL[s] : ''}">${d.getDate()}</button>`;
     })}</div>`;
   }
   $('bf-months').innerHTML = html;
-  updateBackfillButton();
-}
-
-function toggleBackfillDay(k){
-  if(backfillSel.has(k)) backfillSel.delete(k); else backfillSel.add(k);
-  const el = document.querySelector(`[data-day="${k}"]`);
-  if(el){
-    el.classList.toggle('is-selected', backfillSel.has(k));
-    el.setAttribute('aria-pressed', backfillSel.has(k));
-  }
-  updateBackfillButton();
-}
-function updateBackfillButton(){
-  const n = backfillSel.size;
-  setDockButton(n ? `Save ${plural(n, 'day')}` : 'Tap the days you worked out', saveBackfill, !n);
-}
-
-async function saveBackfill(){
-  const n = backfillSel.size;
-  if(!n) return;
-  const ok = await sheet({
-    title:`Save ${plural(n, 'workout')}?`,
-    body:'They\'ll show in your history and count toward your streak. You can only do this once, so check the days first.',
-    actions:[{label:'Go back', value:false}, {label:'Save', kind:'btn-primary', value:true}],
-  });
-  if(!ok) return;
-  backfillSel.forEach(k => {
-    const log = getLog(k) || {day:DAYS[dayIndex(parseKey(k))], isRest:false, exercises:[]};
-    log.backfilled = true;
-    log.isRest = false;
-    saveLog(k, log);
-  });
-  const s = getSettings();
-  s.backfillUsedAt = dateKey(today0());
-  s.backfillCount = n;
-  saveSettings(s);
-  toast(`Added ${plural(n, 'workout')}`, 'ok');
-  histSelected = null;
-  goHistory();
+  updateUnlockLabels();
 }
 
 /* ================= Form videos =================
@@ -1938,6 +2086,7 @@ function setDockHeight(){
 function init(){
   if('ResizeObserver' in window) new ResizeObserver(setDockHeight).observe($('dock'));
   setDockHeight();
+  initProgressSwipe();
 
   const list = $('exercise-list');
   list.addEventListener('input', e => {
@@ -1984,6 +2133,7 @@ function init(){
   closeOutPastDays();
   goWeek();
   resumeTimer();
+  if(isUnlocked()) startUnlockTick();
   checkIn();
   syncLeaderboard();
 

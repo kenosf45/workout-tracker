@@ -65,6 +65,8 @@ svg{display:block;}
 @keyframes screen-in{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
 
 .page-head{margin:8px 0 20px;}
+.head-inline{display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 12px;}
+.head-date{font-size:15px; font-weight:600; color:var(--ink-3);}
 .eyebrow{
   margin:0 0 2px; font-size:13px; font-weight:600; color:var(--ink-3);
   letter-spacing:.04em; text-transform:uppercase;
@@ -102,7 +104,7 @@ svg{display:block;}
 /* ---------- Week ---------- */
 .summary{
   background:var(--ink); color:#fff; border-radius:var(--radius);
-  padding:18px 18px 18px; margin-bottom:20px;
+  padding:18px 18px 18px; margin-top:16px;
 }
 .summary-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px;}
 .summary-num{font-size:40px; line-height:1; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums;}
@@ -195,8 +197,8 @@ svg{display:block;}
   border-radius:12px; background:#fff; font-size:13px; line-height:1.4; color:var(--ink-2);
 }
 .coach b{color:var(--ink); font-weight:700;}
-.coach-icon{width:20px; height:20px; flex-shrink:0; border-radius:50%; display:grid; place-items:center;}
-.coach-icon svg{width:12px; height:12px;}
+.coach-icon{width:24px; height:24px; margin-top:-2px; flex-shrink:0; border-radius:50%; display:grid; place-items:center;}
+.coach-icon svg{width:16px; height:16px;}
 .coach-up .coach-icon{background:var(--done-soft); color:var(--done);}
 .coach-hold .coach-icon{background:var(--card); color:var(--ink-2);}
 .coach-down .coach-icon{background:var(--partial-soft); color:var(--partial);}
@@ -365,6 +367,10 @@ button.cal-cell:active{transform:scale(.9);}
   transition:transform .12s var(--ease-out), background-color .12s;
 }
 .prog-row:active{transform:scale(.98); background:var(--card-press);}
+.swipe{position:relative; margin-bottom:8px; border-radius:var(--radius-sm); overflow:hidden; background:var(--missed);}
+.swipe-del{position:absolute; top:0; right:0; bottom:0; width:88px; color:#fff; font-size:15px; font-weight:700;}
+.swipe-front{position:relative; margin-bottom:0; touch-action:pan-y; transition:transform .25s var(--ease-out), background-color .12s;}
+.swipe-front:active{transform:none;}
 .prog-text{flex:1; min-width:0;}
 .prog-name{display:block; font-size:17px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .prog-sub{display:block; font-size:14px; color:var(--ink-2);}
@@ -446,6 +452,7 @@ button.list-row:active{background:var(--card-press);}
 .list-text{flex:1; min-width:0;}
 .list-title{display:block; font-weight:600;}
 .list-sub{display:block; font-size:13px; color:var(--ink-2);}
+.list-sub:empty{display:none;}
 .foot-note{margin:28px 0 8px; text-align:center; font-size:13px; color:var(--ink-3);}
 
 /* ---------- Backfill ---------- */

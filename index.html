@@ -21,13 +21,12 @@
 
   <!-- Week -->
   <section class="screen active" id="screen-week">
-    <header class="page-head">
-      <p class="eyebrow" id="week-eyebrow"></p>
+    <header class="page-head head-inline">
       <h1 class="large-title">This Week</h1>
-      <p class="page-sub" id="week-range"></p>
+      <span class="head-date" id="week-date"></span>
     </header>
-    <div id="week-summary"></div>
     <div class="day-list" id="week-days"></div>
+    <div id="week-summary"></div>
   </section>
 
   <!-- Day -->
@@ -39,7 +38,6 @@
     <label class="toggle-card">
       <span class="toggle-text">
         <span class="toggle-title">Rest day</span>
-        <span class="toggle-sub" id="rest-sub"></span>
       </span>
       <span class="switch switch-rest">
         <input type="checkbox" id="rest-toggle" onchange="toggleRest()">
@@ -161,7 +159,6 @@
   <section class="screen" id="screen-progress">
     <header class="page-head">
       <h1 class="large-title">Progress</h1>
-      <p class="page-sub">Every exercise you've logged numbers for.</p>
     </header>
     <div id="prog-list"></div>
   </section>
@@ -202,7 +199,6 @@
     <div class="seg" id="lb-seg"></div>
     <div id="lb-list"></div>
     <p class="lb-gap" id="lb-gap"></p>
-    <p class="lb-note">Improvement compares each person's best lifts this week with their own last 4 weeks.</p>
   </section>
 
   <!-- Settings -->
@@ -251,10 +247,10 @@
 
     <p class="section-label">Past workouts</p>
     <div class="list-card">
-      <button class="list-row" id="bf-row" onclick="openBackfill()">
+      <button class="list-row" id="bf-row" onclick="openPastEditor()">
         <span class="list-icon" id="bf-icon"></span>
         <span class="list-text">
-          <span class="list-title">Add past workouts</span>
+          <span class="list-title">Edit past workouts</span>
           <span class="list-sub" id="bf-sub"></span>
         </span>
         <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></span>
@@ -301,10 +297,10 @@
       </div>
     </div>
 
-    <p class="foot-note">Your workouts are saved on this phone. The app counts anonymous daily opens, with no names or workout data.<br>Workout Tracker 2.3</p>
+    <p class="foot-note">Workout Tracker 3.0</p>
   </section>
 
-  <!-- Backfill (code-locked, one time) -->
+  <!-- Past workouts (password, 10 minutes) -->
   <section class="screen" id="screen-backfill">
     <div class="nav-bar">
       <button class="nav-back" onclick="goSettings()">
@@ -313,8 +309,9 @@
       </button>
     </div>
     <header class="page-head">
-      <h1 class="large-title">Add past workouts</h1>
-      <p class="page-sub">Tap every day you worked out in the last 2 months, then save. You can only do this once.</p>
+      <p class="eyebrow" id="past-left"></p>
+      <h1 class="large-title">Past workouts</h1>
+      <p class="page-sub">Tap any day to add or edit its workout.</p>
     </header>
     <div id="bf-months"></div>
   </section>
@@ -330,7 +327,7 @@
       <span class="rest-name" id="rest-name"></span>
     </div>
     <span class="rest-time" id="rest-time">0:00</span>
-    <button class="rest-btn" onclick="addRest(15)">+15s</button>
+    <button class="rest-btn" onclick="addRest(-15)" aria-label="15 seconds less">−15s</button>
     <button class="rest-btn" onclick="skipRest()">Skip</button>
   </div>
   <div class="dock-action" id="dock-action" hidden>
