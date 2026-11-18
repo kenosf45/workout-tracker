@@ -102,22 +102,6 @@ svg{display:block;}
 .btn-ghost-danger{color:var(--missed); margin-top:8px;}
 
 /* ---------- Week ---------- */
-.summary{
-  background:var(--ink); color:#fff; border-radius:var(--radius);
-  padding:18px 18px 18px; margin-top:16px;
-}
-.summary-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px;}
-.summary-num{font-size:40px; line-height:1; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums;}
-.summary-of{color:rgba(255,255,255,.45);}
-.summary-label{display:block; margin-top:6px; color:rgba(255,255,255,.72); font-size:14px;}
-.streak{
-  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
-  background:rgba(255,255,255,.1); border-radius:999px; padding:7px 12px 7px 9px;
-  font-size:13px; font-weight:600;
-}
-.streak svg{width:16px; height:16px; color:var(--gold);}
-.meter{height:6px; margin-top:18px; border-radius:99px; background:rgba(255,255,255,.14); overflow:hidden;}
-.meter span{display:block; height:100%; border-radius:99px; background:#4CC38A; transition:width .5s var(--ease-out);}
 
 .day-list{display:flex; flex-direction:column; gap:8px;}
 .day-row{

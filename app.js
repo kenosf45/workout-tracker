@@ -32,7 +32,6 @@ const ICON = {
   more: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18.5" cy="12" r="1.8"/></svg>',
   plus: icon('<path d="M12 5v14M5 12h14"/>', 2.2),
   video: icon('<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/>'),
-  flame: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6 2.3c.4 2.9-.7 4.6-2.1 6.2C9 10.1 7.5 11.7 7.5 14.6A4.5 4.5 0 0 0 12 19.2a4.6 4.6 0 0 0 4.6-4.6c0-1.6-.6-2.8-1.3-3.7-.2 1.3-.9 2.1-1.8 2.4.6-2.9-.1-6.6-.9-11z"/></svg>',
   lock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
   unlock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 6.8-1.2"/>'),
   calCheck: icon('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
@@ -246,8 +245,8 @@ function goWeek(){ showScreen('week'); renderWeek(); }
 function renderWeek(){
   const plan = getPlan(), rest = getRest(), dates = weekDates(), t = today0();
   $('week-date').textContent = `${DAYS[dayIndex(t)].slice(0, 3)}, ${fmtShort(t)}`;
+  $('week-range').textContent = `${fmtShort(dates[0])} – ${fmtShort(dates[6])}`;
 
-  let planned = 0, worked = 0;
   const rows = dates.map((d, i) => {
     const dayName = DAYS[i], log = getLog(dateKey(d)), exs = plan[dayName] || [];
     const isPast = d < t, isToday = +d === +t;
@@ -257,8 +256,6 @@ function renderWeek(){
     if(isRest){
       state = 'rest'; sub = 'Rest day';
     } else {
-      if(exs.length || workedOut(log)) planned++;
-      if(workedOut(log)) worked++;
       const c = log ? setCounts(log) : null;
       if(log && log.backfilled && (!c || c.done === 0)){ state = 'done'; sub = 'Worked out'; }
       else if(c && c.done > 0){ state = c.done >= c.total ? 'done' : 'partial'; sub = `${plural(log.exercises.length, 'exercise')} · ${c.done}/${c.total} sets`; }
@@ -276,19 +273,6 @@ function renderWeek(){
     </button>`;
   });
   $('week-days').innerHTML = rows.join('');
-
-  const {streak} = workoutStats();
-  const pct = planned ? Math.min(100, Math.round(worked / planned * 100)) : 0;
-  $('week-summary').innerHTML = `<div class="summary">
-    <div class="summary-top">
-      <div>
-        <span class="summary-num">${worked}<span class="summary-of">/${planned}</span></span>
-        <span class="summary-label">${planned ? 'workouts done this week' : 'Tap a day to plan your workouts'}</span>
-      </div>
-      <span class="streak">${ICON.flame}${streak ? `${streak}-week streak` : 'No streak yet'}</span>
-    </div>
-    <div class="meter"><span style="width:${pct}%"></span></div>
-  </div>`;
 }
 
 /* ================= Day ================= */
