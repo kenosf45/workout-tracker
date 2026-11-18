@@ -38,6 +38,12 @@ const ICON = {
   trophy: icon('<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/>'),
   chart: icon('<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5L19.5 8"/>'),
 };
+const COACH_ICON = {
+  up: icon('<path d="M12 19V5M6 11l6-6 6 6"/>', 2.6),
+  hold: icon('<path d="M6 9.5h12M6 14.5h12"/>', 2.6),
+  down: icon('<path d="M12 5v14M6 13l6 6 6-6"/>', 2.6),
+  back: icon('<path d="M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4"/>', 2.4),
+};
 const STATUS_ICON = {
   done: ICON.check, partial: ICON.dot, missed: ICON.x, rest: ICON.moon,
   today: ICON.arrow, upcoming: '', none: ICON.dash,
@@ -305,19 +311,104 @@ function buildDayLog(dayName, key){
   return log;
 }
 
-// "Previous" numbers and best weights come from every day before this one.
+// "Previous" numbers, best weights and each exercise's past sessions (oldest first)
+// come from every day before this one.
 function indexHistory(beforeKey){
-  const prev = {}, best = {};
+  const prev = {}, best = {}, sessions = {};
   allLogs().filter(x => x.date < beforeKey && !x.log.isRest).reverse().forEach(({date, log}) => {
     log.exercises.forEach(ex => {
       const k = normName(ex.name);
       const done = ex.entries.filter(e => e.done);
       if(!done.length) return;
       if(!prev[k]) prev[k] = {date, entries:ex.entries};
+      (sessions[k] = sessions[k] || []).unshift({date, sets:done.map(e => ({w:num(e.w), r:num(e.r)}))});
       done.forEach(e => { const w = num(e.w); if(w > 0 && (best[k] == null || w > best[k])) best[k] = w; });
     });
   });
-  return {prev, best};
+  return {prev, best, sessions};
+}
+
+/* Weekly suggestion ("coach"), built from standard lifting rules:
+   - Double progression: go up only after hitting the target reps on every set.
+   - After a jump to a new weight, stay there until the reps catch up.
+   - Time off beats any trend: hold after 2+ weeks, ~10% lighter after 3+, ~20% after 6+.
+   - Deload ~10% after two bad sessions at the same weight, or three sessions of falling strength.
+   Strength is compared with the estimated one-rep max (Epley): weight × (1 + reps ÷ 30). */
+const e1rm = (w, r) => w * (1 + r / 30);
+
+function coach(ex){
+  const sessions = cur.sessions[normName(ex.name)];
+  if(!sessions || !sessions.length) return null;
+  const last = sessions.at(-1), before = sessions.at(-2);
+  const n = ex.sets;
+  const timed = ex.time > 0;
+  const topW = (s) => maxOf(s.sets.map(x => x.w));
+  const W = topW(last);
+  const weighted = !timed && W > 0;
+  const repsAtTop = (s) => s.sets.filter(x => !weighted || x.w === topW(s)).map(x => x.r);
+  const reps = repsAtTop(last);
+  const target = timed ? ex.time : (ex.reps || maxOf(reps));
+  const perSet = (f) => Array.from({length:n}, (_, i) => f(reps[i] ?? reps.at(-1) ?? target));
+  const daysOff = Math.round((cur.date - parseKey(last.date)) / 864e5);
+  const weeks = Math.floor(daysOff / 7);
+  const step = W >= 20 ? 5 : 2.5;
+  const roundW = (x) => Math.max(step, Math.round(x / step) * step);
+  const got = `${reps.map(fmtNum).join('/')}${timed ? 's' : ''}`;
+  const what = timed ? 'seconds' : 'reps';
+  const roundCount = (v) => (timed ? Math.max(5, Math.round(v / 5) * 5) : Math.max(1, Math.round(v)));
+
+  // Time off comes first: a good trend before a break doesn't carry through it.
+  if(daysOff > 21){
+    const f = daysOff > 42 ? 0.8 : 0.9;
+    const text = `${weeks} weeks since last time. Ease back in about ${daysOff > 42 ? 20 : 10}% lighter.`;
+    if(weighted) return {kind:'back', w:roundW(W * f), reps:perSet(() => target), text};
+    return {kind:'back', w:0, reps:perSet(r => roundCount(r * f)), text:`${weeks} weeks since last time. Ease back in with fewer ${what}.`};
+  }
+  if(daysOff > 14){
+    return {kind:'hold', w:weighted ? W : 0, reps:weighted ? perSet(() => target) : perSet(r => r),
+      text:`2 weeks since last time. Repeat ${weighted ? fmtNum(W) + ' ' + UNIT : 'last time'} before going up.`};
+  }
+
+  const hitAll = reps.length >= n && reps.slice(0, n).every(r => r >= target);
+  // Every set done was on target, there just weren't enough of them: finish them before going up.
+  const fewerSets = !hitAll && reps.length < n && reps.every(r => r >= target);
+  if(!weighted){
+    const add = timed ? 5 : 1;
+    if(hitAll) return {kind:'up', w:0, reps:perSet(r => r + add),
+      text:`${timed ? `You held ${fmtNum(target)}s+` : `You did ${fmtNum(target)}+ reps`} on every set. Add ${timed ? '5 seconds per hold' : '1 rep per set'}.`};
+    if(fewerSets) return {kind:'hold', w:0, reps:perSet(() => target), text:`Finish all ${n} sets before adding more (you did ${reps.length} last time).`};
+    return {kind:'hold', w:0, reps:perSet(r => Math.min(target, r + add)), text:`Aim for ${timed ? '5 more seconds per hold' : '1 more rep per set'} (${got} last time).`};
+  }
+
+  if(hitAll){
+    const inc = W < 50 ? 5 : Math.max(5, Math.round(W * 0.025 / 5) * 5);
+    return {kind:'up', w:W + inc, reps:perSet(() => target), text:`You hit ${fmtNum(target)} reps on every set at ${fmtNum(W)}.`};
+  }
+  // "Bad" = more than 2 reps short per set on average at that session's top weight.
+  const bad = (s) => { const r = repsAtTop(s); return r.reduce((a, x) => a + Math.max(0, target - x), 0) / r.length > 2; };
+  const recent = sessions.slice(-3);
+  const falling = recent.length === 3 && Math.round((parseKey(recent[2].date) - parseKey(recent[0].date)) / 864e5) <= 28 &&
+    recent.every((s, i) => i === 0 || maxOf(s.sets.map(x => e1rm(x.w, x.r))) < maxOf(recent[i - 1].sets.map(x => e1rm(x.w, x.r))));
+  if((bad(last) && before && topW(before) === W && bad(before)) || falling){
+    return {kind:'down', w:roundW(W * 0.9), reps:perSet(() => target),
+      text:falling ? 'Strength has dipped 3 sessions in a row. Go about 10% lighter and build back up.'
+                   : 'Reps dropped two sessions in a row. Go about 10% lighter and build back up.'};
+  }
+  if(fewerSets){
+    return {kind:'hold', w:W, reps:perSet(() => target), text:`Finish all ${n} sets at ${fmtNum(W)} before going up (you did ${reps.length} last time).`};
+  }
+  const better = perSet(r => Math.min(target, r + 1));
+  if(before && topW(before) < W){
+    return {kind:'hold', w:W, reps:better, text:`You moved up to ${fmtNum(W)} last time and got ${got}. Stay there and beat those reps.`};
+  }
+  return {kind:'hold', w:W, reps:better, text:`Stay at ${fmtNum(W)} and aim for 1 more rep per set (${got} last time).`};
+}
+
+function coachHeadline(c, timed){
+  const same = c.reps.every(r => r === c.reps[0]);
+  const reps = same ? fmtNum(c.reps[0]) : c.reps.map(fmtNum).join('/');
+  if(c.w) return `Try ${fmtNum(c.w)} × ${reps}`;
+  return timed ? `Try ${reps}s holds` : `Try ${reps} reps`;
 }
 
 function renderDay(){
@@ -329,6 +420,8 @@ function renderDay(){
   cur.log = buildDayLog(dayName, cur.key);
   cur.planIds = new Set((getPlan()[dayName] || []).map(e => e.id));
   Object.assign(cur, indexHistory(cur.key));
+  cur.coach = {};
+  cur.log.exercises.forEach(ex => { cur.coach[ex.id] = coach(ex); });
   $('rest-toggle').checked = !!cur.log.isRest;
   renderExercises();
 }
@@ -408,15 +501,19 @@ function fmtSet(e, timed, fallbackReps){
   return '✓';
 }
 
-// Grey hint shown in an empty box, and used when a set is ticked without typing:
-// the set above it first, then the exercise's planned weight and reps, then last time's numbers.
+// Grey hint shown in an empty box, and used when a set is ticked without typing.
+// Weight: the set above, then this week's suggestion, the planned weight, last time.
+// Reps: this week's suggestion for that set, then the set above, the target, last time.
 function suggestion(ex, i){
   let w = '', r = '';
+  const c = cur.coach && cur.coach[ex.id];
+  if(c && c.reps[i] != null) r = fmtNum(c.reps[i]);
   for(let j = i - 1; j >= 0 && (!w || !r); j--){
     const e = ex.entries[j];
     if(!w && num(e.w) > 0) w = fmtNum(num(e.w));
     if(!r && num(e.r) > 0) r = fmtNum(num(e.r));
   }
+  if(!w && c && c.w) w = fmtNum(c.w);
   if(!w && num(ex.weight) > 0) w = fmtNum(num(ex.weight));
   if(!r){ const target = ex.time > 0 ? ex.time : ex.reps; if(target > 0) r = String(target); }
   const p = cur.prev[normName(ex.name)];
@@ -437,6 +534,8 @@ function buildCard(ex){
   if(num(ex.weight) > 0) meta.push(`${fmtNum(num(ex.weight))} ${UNIT}`);
   if(ex.restSeconds > 0) meta.push(`${fmtRest(ex.restSeconds)} rest`);
   if(!inPlan) meta.push('removed from plan');
+  // The suggestion stays up until every set is done.
+  const tip = cur.coach && cur.coach[ex.id] && !ex.entries.every(e => e.done) ? cur.coach[ex.id] : null;
 
   const rows = ex.entries.map((e, i) => {
     const p = prev && prev.entries[i] && prev.entries[i].done ? prev.entries[i] : null;
@@ -469,6 +568,8 @@ function buildCard(ex){
       </button>
       ${inPlan ? `<button class="icon-btn" onclick="openEditExercise('${ex.id}')" aria-label="Edit ${esc(ex.name)}">${ICON.more}</button>` : ''}
     </div>
+    ${tip ? `<p class="coach coach-${tip.kind}"><span class="coach-icon" aria-hidden="true">${COACH_ICON[tip.kind]}</span>
+      <span><b>${esc(coachHeadline(tip, timed))}.</b> ${esc(tip.text)}</span></p>` : ''}
     <div class="set-row set-head" aria-hidden="true"><span>Set</span><span>Previous</span><span>${UNIT}</span><span>${timed ? 'Sec' : 'Reps'}</span><span></span></div>
     ${rows}`;
   return card;
