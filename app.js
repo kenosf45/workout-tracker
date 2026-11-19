@@ -13,7 +13,8 @@ const UNLOCK_MINUTES = 10;
 const MAX_VIDEO_MB = 300;
 // Server for rest alerts, usage counts and the leaderboard (source: APPS/workout-push).
 // Previews talk to a local copy (`wrangler dev`) so testing never touches the real board.
-const IS_PREVIEW = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+// That includes a phone on home Wi-Fi opening this computer's address (192.168.x.x and similar).
+const IS_PREVIEW = /^(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(location.hostname);
 const PUSH_URL = IS_PREVIEW ? 'http://127.0.0.1:8787' : 'https://workout-push.marcomorocho11.workers.dev';
 const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
 // Per-phone keys that never go into a backup file.
@@ -35,6 +36,7 @@ const ICON = {
   lock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
   unlock: icon('<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 6.8-1.2"/>'),
   calCheck: icon('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
+  pencil: icon('<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/>'),
   trophy: icon('<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3M16 6h3a3 3 0 0 1-3 3M12 13v4M8.5 20h7M10 17h4"/>'),
   chart: icon('<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5L19.5 8"/>'),
 };
@@ -243,7 +245,7 @@ function setDockButton(label, onClick, disabled = false){
 function goWeek(){ showScreen('week'); renderWeek(); }
 
 function renderWeek(){
-  const plan = getPlan(), rest = getRest(), dates = weekDates(), t = today0();
+  const plan = getPlan(), rest = getRest(), dates = weekDates(), t = today0(), names = getDayNames();
   $('week-date').textContent = `${DAYS[dayIndex(t)].slice(0, 3)}, ${fmtShort(t)}`;
   $('week-range').textContent = `${fmtShort(dates[0])} – ${fmtShort(dates[6])}`;
 
@@ -263,6 +265,7 @@ function renderWeek(){
       else if(isPast){ state = 'missed'; sub = `Missed · ${plural(exs.length, 'exercise')}`; }
       else { state = isToday ? 'today' : 'upcoming'; sub = plural(exs.length, 'exercise'); }
     }
+    if(names[dayName] && !isRest) sub = `${names[dayName]} · ${sub}`;
     return `<button class="day-row${isToday ? ' is-today' : ''}" onclick="goDay(${i})">
       <span class="status st-${state}">${STATUS_ICON[state]}</span>
       <span class="day-text">
@@ -437,8 +440,105 @@ function renderDay(){
   cur.coach = {};
   cur.log.exercises.forEach(ex => { cur.coach[ex.id] = coach(ex); });
   $('rest-toggle').checked = !!cur.log.isRest;
+  renderDayName();
   if(cur.past) updateUnlockLabels();
   renderExercises();
+}
+
+/* ================= Named days + Reuse a workout =================
+   A weekday can have a name ("Pull Day"). Any day's exercises can be copied onto another day;
+   copies are independent, so changing sets or reps on one day never touches the other. */
+const getDayNames = () => loadJSON('wt_daynames', {});
+const saveDayNames = (n) => saveJSON('wt_daynames', n);
+
+function renderDayName(){
+  const btn = $('day-name-btn');
+  btn.hidden = cur.past; // names belong to the weekly plan, not to one past day
+  const name = getDayNames()[DAYS[cur.idx]];
+  btn.classList.toggle('is-empty', !name);
+  btn.innerHTML = name ? `${esc(name)}${ICON.pencil}` : `${ICON.plus}Name this routine`;
+}
+
+async function editDayName(){
+  const day = DAYS[cur.idx];
+  const current = getDayNames()[day] || '';
+  const save = (wrap, close) => close(wrap.querySelector('#dayname-in').value.replace(/\s+/g, ' ').trim().slice(0, 24));
+  const name = await sheet({
+    title:'Name this routine',
+    html:`<input class="text-in" id="dayname-in" maxlength="24" autocomplete="off" autocapitalize="words"
+            enterkeyhint="done" placeholder="Pull Day" value="${esc(current)}" aria-label="Day name">`,
+    dialog:true,
+    actions:[
+      ...(current ? [{label:'Remove', value:''}] : [{label:'Cancel', value:null}]),
+      {label:'Save', kind:'btn-primary', onClick:(wrap, close) => { save(wrap, close); return false; }},
+    ],
+    onMount:(wrap, close) => {
+      const inp = wrap.querySelector('#dayname-in');
+      inp.focus();
+      inp.addEventListener('keydown', e => { if(e.key === 'Enter') save(wrap, close); });
+    },
+  });
+  if(name == null) return;
+  const names = getDayNames();
+  if(name) names[day] = name; else delete names[day];
+  saveDayNames(names);
+  renderDayName();
+}
+
+// Days that have exercises in the plan, other than the one being edited.
+function copySources(){
+  const plan = getPlan(), names = getDayNames();
+  return DAYS.map((day, i) => ({day, i, name:names[day] || '', exs:plan[day] || []}))
+    .filter(s => s.exs.length && (cur.past || s.i !== cur.idx));
+}
+
+async function openCopyWorkout(){
+  const sources = copySources();
+  if(!sources.length) return;
+  const pick = await sheet({
+    title:'Reuse a workout',
+    html:`<div class="pick-list">${sources.map((s, k) => `<button class="pick-item" data-k="${k}">
+        <span class="pick-name">${s.name ? `${esc(s.name)}<span class="pick-day"> · ${s.day}</span>` : s.day}</span>
+        <span class="pick-sub">${plural(s.exs.length, 'exercise')}</span>
+      </button>`).join('')}</div>`,
+    actions:[{label:'Cancel', value:null}],
+    onMount:(wrap, close) => wrap.querySelectorAll('.pick-item').forEach(b => b.addEventListener('click', () => close(+b.dataset.k))),
+  });
+  if(pick == null) return;
+  const src = sources[pick];
+  const label = src.name || src.day;
+  const here = cur.past ? cur.log.exercises : getPlan()[DAYS[cur.idx]] || [];
+
+  let mode = 'add';
+  if(here.length){
+    mode = await sheet({
+      title:`${cur.past ? fmtLong(cur.date) : DAYS[cur.idx]} already has ${plural(here.length, 'exercise')}`,
+      body:`Add ${esc(label)}'s exercises to them, or replace them?`,
+      actions:[{label:'Cancel', value:null}, {label:'Replace', value:'replace'}, {label:'Add', kind:'btn-primary', value:'add'}],
+    });
+    if(!mode) return;
+  }
+  // When adding, an exercise that's already on this day isn't added twice.
+  const have = new Set(mode === 'add' ? here.map(e => normName(e.name)) : []);
+  const copies = src.exs.filter(e => !have.has(normName(e.name))).map(e => ({
+    id:newId('ex'), name:e.name, sets:e.sets, reps:e.reps, weight:e.weight || 0, time:e.time, restSeconds:e.restSeconds || 0,
+  }));
+
+  if(cur.past){
+    const kept = mode === 'replace' ? [] : cur.log.exercises;
+    cur.log.exercises = kept.concat(copies.map(c => ({...c, entries:Array.from({length:c.sets}, blankEntry)})));
+    saveDay();
+  } else {
+    const plan = getPlan();
+    const day = DAYS[cur.idx];
+    plan[day] = (mode === 'replace' ? [] : plan[day] || []).concat(copies);
+    savePlan(plan);
+    // The day takes the copied name only when it's now just that workout (it was empty or got replaced).
+    const names = getDayNames();
+    if(src.name && !names[day] && (!here.length || mode === 'replace')){ names[day] = src.name; saveDayNames(names); }
+  }
+  toast(`Copied ${label}`, 'ok');
+  renderDay();
 }
 
 // Exercises you've started move to the top in the order you started them; the rest keep plan order.
@@ -456,14 +556,15 @@ function sortExercises(){
 function renderExercises(){
   const list = $('exercise-list');
   if(cur.log.isRest){
-    $('add-ex-btn').hidden = true;
+    $('add-row').hidden = true;
     list.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.moon}</div><p class="empty-title">Rest day</p></div>`;
     return;
   }
-  $('add-ex-btn').hidden = false;
+  $('add-row').hidden = false;
+  $('copy-btn').hidden = !copySources().length;
+  $('add-row').classList.toggle('single', $('copy-btn').hidden);
   if(!cur.log.exercises.length){
-    list.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.calCheck}</div>
-      <p class="empty-title">No exercises yet</p><p>Add what you do every ${DAYS[cur.idx]}. It repeats each week.</p></div>`;
+    list.innerHTML = `<div class="empty"><div class="empty-icon">${ICON.calCheck}</div><p class="empty-title">No exercises yet</p></div>`;
     return;
   }
   list.innerHTML = '';
@@ -655,10 +756,70 @@ function fillEditForm(t){
   $('edit-time').value = t.time || 0;
   $('edit-rest').value = t.restSeconds || 0;
   $('edit-eyebrow').textContent = cur.past ? `${fmtLong(cur.date)} only` : DAYS[cur.idx];
-  const names = new Set();
-  Object.values(getPlan()).flat().forEach(e => names.add(e.name));
-  allLogs().forEach(x => x.log.exercises.forEach(e => names.add(e.name)));
-  $('exercise-names').innerHTML = [...names].sort().map(n => `<option value="${esc(n)}">`).join('');
+  hideNameSuggest();
+}
+
+/* Name suggestions: your own exercise names first, then the built-in list (exercises.js).
+   Names that start with what you typed come first, then a word that starts with it, then any match. */
+function ownExerciseNames(){
+  const names = new Map();
+  Object.values(getPlan()).flat().forEach(e => names.set(normName(e.name), e.name));
+  allLogs().forEach(x => x.log.exercises.forEach(e => { if(!names.has(normName(e.name))) names.set(normName(e.name), e.name); }));
+  return [...names.values()];
+}
+
+function nameMatches(query){
+  const q = normName(query);
+  if(!q) return [];
+  const seen = new Set(), out = [];
+  // "Push ups" and "Push-ups" count as the same name; your own spelling wins because it's added first.
+  const loose = (s) => s.replace(/[^a-z0-9]/g, '');
+  const add = (name, type, own) => {
+    const k = normName(name);
+    if(seen.has(loose(k)) || loose(k) === loose(q)) return;
+    const pos = k.indexOf(q);
+    if(pos < 0) return;
+    seen.add(loose(k));
+    const rank = pos === 0 ? 0 : k.split(' ').some(w => w.startsWith(q)) ? 1 : 2;
+    out.push({name, type, rank:rank * 2 + (own ? 0 : 1), pos, len:q.length});
+  };
+  ownExerciseNames().forEach(n => add(n, null, true));
+  EXERCISE_LIBRARY.forEach(([n, t]) => add(n, t, false));
+  return out.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name)).slice(0, 6);
+}
+
+function renderNameSuggest(){
+  const input = $('edit-name'), box = $('name-suggest');
+  const items = nameMatches(input.value);
+  if(!items.length || document.activeElement !== input){ hideNameSuggest(); return; }
+  box.innerHTML = items.map((m, i) => {
+    const n = m.name;
+    const label = `${esc(n.slice(0, m.pos))}<b>${esc(n.slice(m.pos, m.pos + m.len))}</b>${esc(n.slice(m.pos + m.len))}`;
+    return `<button type="button" class="suggest-item" role="option" data-i="${i}">${label}</button>`;
+  }).join('');
+  box._items = items;
+  box.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+}
+function hideNameSuggest(){
+  $('name-suggest').hidden = true;
+  $('edit-name').setAttribute('aria-expanded', 'false');
+}
+
+// Picking a built-in exercise for a new entry also sets it up the right way:
+// timed holds get a 30-second hold, bodyweight moves get no weight.
+function pickName(m){
+  $('edit-name').value = m.name;
+  hideNameSuggest();
+  if(editing.isNew && m.type === 't'){
+    $('edit-time').value = 30;
+    $('edit-reps').value = 0;
+    $('edit-weight').value = '';
+  } else if(editing.isNew && m.type === 'b'){
+    $('edit-weight').value = '';
+    $('edit-time').value = 0;
+  }
+  $('edit-name').blur();
 }
 
 function openAddExercise(){
@@ -1586,7 +1747,32 @@ function onLbToggle(el){ if(el.checked) joinLeaderboard(); else leaveLeaderboard
 /* ================= Settings ================= */
 function goSettings(){ showScreen('settings'); renderSettings(); }
 
+/* Theme: until the Dark mode switch is flipped ("system"), the app follows the phone's light/dark setting;
+   after that it stays "light" or "dark". The <head> applies the saved choice before the page draws;
+   this keeps it (and the status bar color) in sync. */
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+const isDark = () => { const t = getSettings().theme || 'system'; return t === 'dark' || (t === 'system' && darkQuery.matches); };
+function applyTheme(){
+  const t = getSettings().theme || 'system';
+  if(t === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  document.querySelector('meta[name="theme-color"]').content = isDark() ? '#0E0F11' : '#FFFFFF';
+}
+function onPhoneThemeChange(){
+  applyTheme();
+  if(currentScreen === 'settings') renderSettings();
+}
+function setTheme(t){
+  const s = getSettings();
+  s.theme = t;
+  saveSettings(s);
+  applyTheme();
+  renderSettings();
+}
+
 function renderSettings(){
+  $('dark-toggle').checked = isDark();
+
   const support = pushSupport();
   const pushOn = !!getPushSub() && support === 'ok' && Notification.permission === 'granted';
   $('push-toggle').checked = pushOn;
@@ -2068,6 +2254,8 @@ function setDockHeight(){
 }
 
 function init(){
+  applyTheme();
+  darkQuery.addEventListener ? darkQuery.addEventListener('change', onPhoneThemeChange) : darkQuery.addListener(onPhoneThemeChange);
   if('ResizeObserver' in window) new ResizeObserver(setDockHeight).observe($('dock'));
   setDockHeight();
   initProgressSwipe();
@@ -2097,7 +2285,17 @@ function init(){
   // The bottom bar hides while typing so the keyboard doesn't push it over the sets.
   document.addEventListener('focusin', e => { if(e.target.matches('.set-in, .field-in, .stepper input')) document.body.classList.add('typing'); });
   document.addEventListener('focusout', () => document.body.classList.remove('typing'));
-  $('edit-name').addEventListener('keydown', e => { if(e.key === 'Enter') e.target.blur(); });
+  const nameIn = $('edit-name'), suggestBox = $('name-suggest');
+  nameIn.addEventListener('keydown', e => { if(e.key === 'Enter') e.target.blur(); });
+  nameIn.addEventListener('input', renderNameSuggest);
+  nameIn.addEventListener('focus', renderNameSuggest);
+  nameIn.addEventListener('blur', () => setTimeout(hideNameSuggest, 150));
+  // Keep the keyboard up while a suggestion is being tapped.
+  suggestBox.addEventListener('pointerdown', e => e.preventDefault());
+  suggestBox.addEventListener('click', e => {
+    const b = e.target.closest('.suggest-item');
+    if(b) pickName(suggestBox._items[+b.dataset.i]);
+  });
 
   $('video-input').addEventListener('change', e => addVideoFiles([...e.target.files]));
   $('restore-input').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if(f) importBackup(f); });

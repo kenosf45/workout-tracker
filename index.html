@@ -3,8 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#FFFFFF">
+<script>
+  // Apply the saved theme before anything is drawn, so the screen never flashes the wrong colors.
+  try{
+    var t = JSON.parse(localStorage.getItem('wt_settings') || '{}').theme;
+    if(t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+  }catch(e){}
+</script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -36,6 +43,7 @@
     <header class="page-head">
       <p class="eyebrow" id="day-eyebrow"></p>
       <h1 class="large-title" id="day-title"></h1>
+      <button class="name-chip" id="day-name-btn" onclick="editDayName()"></button>
     </header>
     <label class="toggle-card">
       <span class="toggle-text">
@@ -47,10 +55,16 @@
       </span>
     </label>
     <div id="exercise-list"></div>
-    <button class="add-tile" id="add-ex-btn" onclick="openAddExercise()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      Add exercise
-    </button>
+    <div class="add-row" id="add-row">
+      <button class="add-tile" onclick="openAddExercise()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Add exercise
+      </button>
+      <button class="add-tile" id="copy-btn" onclick="openCopyWorkout()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+        Reuse a workout
+      </button>
+    </div>
   </section>
 
   <!-- Add / edit exercise -->
@@ -69,9 +83,10 @@
     <div class="form-card">
       <label class="field">
         <span class="field-label">Name</span>
-        <input class="field-in" id="edit-name" list="exercise-names" placeholder="e.g. Bench press"
-               autocomplete="off" autocapitalize="words" enterkeyhint="done">
+        <input class="field-in" id="edit-name" placeholder="e.g. Bench press" autocomplete="off" autocapitalize="words"
+               enterkeyhint="done" role="combobox" aria-autocomplete="list" aria-controls="name-suggest" aria-expanded="false">
       </label>
+      <div class="suggest" id="name-suggest" role="listbox" aria-label="Suggested exercises" hidden></div>
     </div>
 
     <div class="form-card">
@@ -129,7 +144,6 @@
     <div class="form-card" id="edit-videos"></div>
 
     <button class="btn btn-ghost-danger" id="edit-delete" onclick="deleteExercise()">Delete exercise</button>
-    <datalist id="exercise-names"></datalist>
   </section>
 
   <!-- History -->
@@ -208,6 +222,20 @@
     <header class="page-head">
       <h1 class="large-title">Settings</h1>
     </header>
+
+    <p class="section-label">Appearance</p>
+    <div class="list-card">
+      <label class="list-row">
+        <span class="list-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10z"/></svg></span>
+        <span class="list-text">
+          <span class="list-title">Dark mode</span>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="dark-toggle" onchange="setTheme(this.checked ? 'dark' : 'light')">
+          <span class="track"></span>
+        </span>
+      </label>
+    </div>
 
     <p class="section-label">Rest alerts</p>
     <div class="list-card">
@@ -379,6 +407,7 @@
 <input type="file" id="video-input" accept="video/*" multiple hidden>
 <input type="file" id="restore-input" hidden>
 
+<script src="exercises.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
