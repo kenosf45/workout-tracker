@@ -12,9 +12,9 @@ const PAST_EDIT_HASH = '3c80353d976990411bc5cce809a682a031da8b1402a223d8688858d6
 const UNLOCK_MINUTES = 10;
 const MAX_VIDEO_MB = 300;
 // Server for rest alerts, usage counts and the leaderboard (source: APPS/workout-push).
-// Previews talk to a local copy (`wrangler dev`) so testing never touches the real board.
-// That includes a phone on home Wi-Fi opening this computer's address (192.168.x.x and similar).
-const IS_PREVIEW = /^(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(location.hostname);
+// Only the real site talks to the live server. Every test copy (this computer, or a phone opening
+// this computer's Wi-Fi address on any network) uses a local copy (`wrangler dev`) instead.
+const IS_PREVIEW = location.hostname !== 'kenosf45.github.io';
 const PUSH_URL = IS_PREVIEW ? 'http://127.0.0.1:8787' : 'https://workout-push.marcomorocho11.workers.dev';
 const VAPID_PUBLIC_KEY = 'BNV977gDHrz826eNhn7sV_SU9c47u3PUlibbHT3Y9cnPFRh420ZgCfDjYBJikJKdfurHidrhZf8nyOMa3biiZ9w';
 // Per-phone keys that never go into a backup file.
@@ -954,19 +954,16 @@ function runTimer(){
   if(!getTimer()){ $('rest-bar').hidden = true; setDockHeight(); return; }
   $('rest-bar').hidden = false;
   setDockHeight();
+  keepScreenOn(true);
   paintTimer();
   restTick = setInterval(paintTimer, 250);
 }
+// The lock-screen alert is always left in place, even with the app open: if the in-app beep is
+// muted (silent switch) or blocked, the phone's own notification still rings or vibrates.
 function paintTimer(){
   const t = getTimer();
   if(!t){ stopTimer(); return; }
   const left = Math.ceil((t.endsAt - Date.now()) / 1000);
-  // Watching the timer run out in the app: the beep covers it, so call off the lock-screen alert.
-  if(left <= 2 && t.pushed && !document.hidden){
-    t.pushed = false;
-    saveJSON('wt_timer', t);
-    cancelPush();
-  }
   if(left <= 0){ stopTimer(); restDone(t); return; }
   $('rest-time').textContent = fmtClock(left);
   $('rest-name').textContent = t.name;
@@ -977,6 +974,28 @@ function stopTimer(){
   localStorage.removeItem('wt_timer');
   $('rest-bar').hidden = true;
   setDockHeight();
+  keepScreenOn(false);
+}
+
+// While a rest is counting down, stop the phone from auto-locking: a locked app is frozen and can't beep.
+// The phone drops this whenever the app is hidden, so it's asked for again when the app comes back.
+let wakeLock = null, wakeWanted = false, wakePending = false;
+async function keepScreenOn(on){
+  wakeWanted = on;
+  try{
+    if(!on){
+      if(wakeLock){ const w = wakeLock; wakeLock = null; await w.release(); }
+      return;
+    }
+    if(wakeLock || wakePending || !('wakeLock' in navigator) || document.hidden) return;
+    wakePending = true;
+    const lock = await navigator.wakeLock.request('screen');
+    wakePending = false;
+    // The timer may have ended while we waited for the phone's answer.
+    if(!wakeWanted){ lock.release(); return; }
+    wakeLock = lock;
+    lock.addEventListener('release', () => { if(wakeLock === lock) wakeLock = null; });
+  }catch(e){ wakePending = false; }
 }
 // Adjust the running rest by `sec` (the button takes 15 seconds off). Cutting it to nothing just ends it.
 function addRest(sec){
@@ -1113,37 +1132,48 @@ async function syncPush(){
   }catch(e){}
 }
 
-// iPhone only lets a page make sound after a tap, so the audio is unlocked on each set tick.
+// iPhone only lets a page make sound after a tap. Every tap anywhere in the app keeps sound ready,
+// so it still works after the app was closed and reopened, a call, music, or the screen locking.
+// (iPhone's silent switch mutes web sounds no matter what; the lock-screen alert covers that.)
 let audioCtx = null;
 function ensureAudio(){
   try{
-    if(!audioCtx){
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if(!AC) return;
-      audioCtx = new AC();
-      const g = audioCtx.createGain(); g.gain.value = 0;
-      const o = audioCtx.createOscillator(); o.connect(g); g.connect(audioCtx.destination);
-      o.start(); o.stop(audioCtx.currentTime + 0.01);
-    }
-    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return;
+    if(!audioCtx || audioCtx.state === 'closed') audioCtx = new AC();
+    // "suspended" or iPhone's "interrupted": wake it while we have a tap to do it with.
+    if(audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+    // A silent blip finishes unlocking on older iPhones.
+    const g = audioCtx.createGain(); g.gain.value = 0;
+    const o = audioCtx.createOscillator(); o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.01);
   }catch(e){}
 }
-function beep(){
-  if(!audioCtx) return;
+
+// Resolves true once the beep is actually playing; false if the phone won't let it.
+async function beep(){
   try{
-    if(audioCtx.state === 'suspended') audioCtx.resume();
-    const t0 = audioCtx.currentTime;
-    [0, 0.2, 0.4].forEach((delay, i) => {
+    if(!audioCtx) ensureAudio();
+    if(!audioCtx) return false;
+    if(audioCtx.state !== 'running'){
+      // Wait for sound to come back before scheduling, but never hang on it.
+      await Promise.race([audioCtx.resume(), new Promise(r => setTimeout(r, 600))]).catch(() => {});
+    }
+    if(audioCtx.state !== 'running') return false;
+    // Two rounds of three rising beeps, loud enough to hear over gym music.
+    const t0 = audioCtx.currentTime + 0.02;
+    [0, 0.18, 0.36, 0.8, 0.98, 1.16].forEach((delay, i) => {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.type = 'sine';
-      o.frequency.value = i === 2 ? 1175 : 880;
+      o.type = 'triangle';
+      o.frequency.value = [880, 988, 1318][i % 3];
       g.gain.setValueAtTime(0.0001, t0 + delay);
-      g.gain.exponentialRampToValueAtTime(0.2, t0 + delay + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + delay + 0.16);
+      g.gain.exponentialRampToValueAtTime(0.7, t0 + delay + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + delay + 0.15);
       o.connect(g); g.connect(audioCtx.destination);
-      o.start(t0 + delay); o.stop(t0 + delay + 0.18);
+      o.start(t0 + delay); o.stop(t0 + delay + 0.17);
     });
-  }catch(e){}
+    return true;
+  }catch(e){ return false; }
 }
 
 /* ================= History ================= */
@@ -2300,10 +2330,13 @@ function init(){
   $('video-input').addEventListener('change', e => addVideoFiles([...e.target.files]));
   $('restore-input').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if(f) importBackup(f); });
 
+  // Any tap keeps the beep ready (see ensureAudio). Capture phase, so it runs before the tap's own action.
+  ['touchend', 'click'].forEach(type => document.addEventListener(type, ensureAudio, {capture:true, passive:true}));
+
   document.addEventListener('visibilitychange', () => {
     if(document.hidden) return;
     closeOutPastDays(); // the app may have sat in the background past midnight
-    resumeTimer();
+    resumeTimer(); // also asks again to keep the screen on (the phone dropped it while the app was hidden)
     checkIn();
     syncLeaderboard();
     if(currentScreen === 'week') renderWeek();
